@@ -288,11 +288,16 @@ def get_lds(n_samples,Teff,logg,FeH=0.0,xi_def=1.0, how='tess'):
     import pandas as pd
     from astroquery.vizier import Vizier
     setattr(Vizier,'ROW_LIMIT',999999999)
-
+    print(how)
     if how.lower()=='tess':
-        lds=Vizier.get_catalogs("J/A+A/600/A30/table25")[0].to_pandas()
+        #Best-performing models according to https://arxiv.org/abs/2203.05661 is Phoenix 17 r-method:
+        lds=Vizier.get_catalogs("J/A+A/600/A30/tableab")[0].to_pandas()
+        lds=lds.loc[(lds['Type']=='r')&((lds['Mod']=="PD")^(lds['Teff']>3000))]
+        print(lds.columns)
+        if 'xi' not in lds.columns:
+            lds['xi']=np.tile(1,len(lds))
     elif how.lower()=='cheops':
-        lds=pd.read_fwf(os.path.join("Cheops_Quad_LDs_AllFeHs.txt"),header=None,widths=[5,7,5,5,9])
+        lds=pd.read_fwf(os.path.join(os.path.dirname(os.path.abspath(__file__)),"Cheops_Quad_LDs_AllFeHs.txt"),header=None,widths=[5,7,5,5,9])
         lds=pd.DataFrame({'logg':lds.iloc[3::3,0].values.astype(float),'Teff':lds.iloc[3::3,1].values.astype(float),
                           'Z':lds.iloc[3::3,2].values.astype(float),'xi':lds.iloc[3::3,3].values.astype(float),
                           'aLSM':lds.iloc[3::3,4].values.astype(float),'bLSM':lds.iloc[4::3,4].values.astype(float),
@@ -335,3 +340,44 @@ def roll_rollangles(roll_angles):
     else:
         phi_jump=0
     return (roll_angles-phi_jump)%360
+
+def vals_to_latex(vals):
+    #Function to turn -1,0, and +1 sigma values into round latex strings for a table
+    try:
+        roundval=int(np.min([-1*np.floor(np.log10(abs(vals[1]-vals[0])))+1,-1*np.floor(np.log10(abs(vals[2]-vals[1])))+1]))
+        errs=[vals[2]-vals[1],vals[1]-vals[0]]
+        if np.round(errs[0],roundval-1)==np.round(errs[1],roundval-1):
+            #Errors effectively the same...
+            if roundval<0:
+                return " $ "+str(int(np.round(vals[1],roundval)))+" \pm "+str(int(np.round(np.average(errs),roundval)))+" $ "
+            else:
+                return " $ "+str(np.round(vals[1],roundval))+" \pm "+str(np.round(np.average(errs),roundval))+" $ "
+        else:
+            if roundval<0:
+                return " $ "+str(int(np.round(vals[1],roundval)))+"^{+"+str(int(np.round(errs[0],roundval)))+"}_{-"+str(int(np.round(errs[1],roundval)))+"} $ "
+            else:
+                return " $ "+str(np.round(vals[1],roundval))+"^{+"+str(np.round(errs[0],roundval))+"}_{-"+str(np.round(errs[1],roundval))+"} $ "
+    except:
+        return " - "
+
+def vals_to_short(vals,roundval=None):
+    #Function to turn -1,0, and +1 sigma values into round latex strings for a table
+    try:
+        if roundval is None:
+            roundval=int(np.min([-1*np.floor(np.log10(abs(vals[1]-vals[0])))+1,-1*np.floor(np.log10(abs(vals[2]-vals[1])))+1]))-1
+        return " $ "+str(np.round(vals[1],roundval))+" $ "
+    except:
+        return " - "
+    
+    
+def vals_to_overleaf(name,vals,include_short=True):
+    if len(vals)==2 and vals[1]<0.5*vals[0]:
+        vals=[vals[0]-vals[1],vals[0],vals[0]+vals[1]]
+    
+    replace_vals = {'_':'','[':'',']':'','/':'div','-':'minus','0':'zero','1':'one','2':'two','3':'three','4':'four','5':'five','6':'six','7':'seven','8':'eight','9':'nine'}
+    for symbol, text in replace_vals.items():
+        name = name.replace(symbol, text)
+    st = "\\newcommand{\\T"+name+"}{"+vals_to_latex(vals)+"}\n"
+    if include_short:
+        st+="\\newcommand{\\T"+name+"short}{"+vals_to_short(vals)+"}\n"
+    return st
