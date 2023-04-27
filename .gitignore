@@ -1,5 +1,5 @@
 __pycache__             
-HIP41379         
+HIP41379
 TOI4324
 TOI1768
 TOI-469
@@ -10,7 +10,7 @@ TOI1736
 untitled.py             
 CHATEAUX_targetlist_final_ORs.csv
 K2-158
-TIC5364106              
+TIC5364106
 TOI2688
 TOI1722
 TOI5624
@@ -30,14 +30,13 @@ TOI2519
 TIC304339227
 TOI2513
 TOI480
-TOI_tab_jd_2459990.csv
 TOI1117
 TOI1723
-TOI_tab_jd_2460020.csv
+TOI_tab_jd_24?????.csv
+tables/TOI_tab_jd_24?????.csv
 TOI2494
 TOI475
 runHIP41378_2.py
-TOI_tab_jd_2459980.csv
 Chateaux_ORs_apr23.csv
 TOI-1835
 TOI2486
@@ -50,7 +49,6 @@ TOI2467
 TOI4185
 run469.py
 TOI4361
-TOI_tab_jd_2460040.csv
 TOI4643 
 TOI2429
 TOI880
