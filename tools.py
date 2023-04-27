@@ -311,13 +311,13 @@ def get_lds(n_samples,Teff,logg,FeH=0.0,xi_def=1.0, how='tess'):
         if 'xi' not in lds.columns:
             lds['xi']=np.tile(1,len(lds))
     elif how.lower()=='cheops':
-        lds=pd.read_fwf(os.path.join(os.path.dirname(os.path.abspath(__file__)),"Cheops_Quad_LDs_AllFeHs.txt"),header=None,widths=[5,7,5,5,9])
+        lds=pd.read_fwf(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","Cheops_Quad_LDs_AllFeHs.txt"),header=None,widths=[5,7,5,5,9])
         lds=pd.DataFrame({'logg':lds.iloc[3::3,0].values.astype(float),'Teff':lds.iloc[3::3,1].values.astype(float),
                           'Z':lds.iloc[3::3,2].values.astype(float),'xi':lds.iloc[3::3,3].values.astype(float),
                           'aLSM':lds.iloc[3::3,4].values.astype(float),'bLSM':lds.iloc[4::3,4].values.astype(float),
                           'CHI2':lds.iloc[5::3,4].values.astype(float)})
     elif how.lower() in ['k2','kepler']:
-        arr = np.genfromtxt(os.path.join(os.path.dirname(os.path.abspath(__file__)),"KeplerLDlaws.txt"),skip_header=2)
+        arr = np.genfromtxt(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","KeplerLDlaws.txt"),skip_header=2)
         #Selecting FeH manually:
         lds=pd.DataFrame({'Teff':arr[:,0],'logg':arr[:,1],'Z':arr[:,2],
                           'aLSM':arr[:,4],'bLSM':arr[:,5],'xi':np.tile(1,len(arr[:,0]))})
