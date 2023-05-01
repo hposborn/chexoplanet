@@ -107,8 +107,10 @@ class chexo_model():
         #Initalising save locations
         if self.load_from_file and not self.overwrite:
             #Catching the case where the file doesnt exist:
-            success = self.LoadModelFromFile(loadfile=self.save_file_loc)
-            self.load_from_file = success
+            try:
+                self.load_model_from_file(loadfile=self.save_file_loc)
+            except:
+                self.load_from_file = False
 
         self.percentiles={'-2sig':2.2750132, '-1sig':15.8655254, 'med':50., '+1sig':84.1344746, '+2sig':97.7249868}
 
@@ -268,59 +270,19 @@ class chexo_model():
         out_dir=os.path.join(self.save_file_loc,self.name)
         pipe_refdataloc=config.get_conf_paths()[1]
         
-        #Getting all possible PIPE PSFs:
-        #psfs=pd.read_csv(pipe_refdataloc+"/psf_lib/PSF_list.txt",
-        #                 delim_whitespace=True,header=None,na_values="?")
-
-        #Checking the X/Y subarray position and checking the PSF locations are close
-        # subarr=fits.open(glob.glob(os.path.join(out_dir,fk,"*SCI_COR_SubArray_V0200.fits"))[0])
-        # xy=(subarr[1].header['X_WINOFF']+100,subarr[1].header['Y_WINOFF']+100)
-        # thresh_dist=5#pixels
-        # psf_locs=glob.glob(pipe_refdataloc+"/psf_lib/*")
-        # psf_xys=np.vstack([np.array(pl.split('/')[-1].split("x")).astype(int) for pl in psf_locs])
-        # closest_subarr=np.argmin(np.sqrt((psf_xys[:,0]-xy[0])**2+(psf_xys[:,1]-xy[1])**2))
-        # assert np.sqrt((psf_xys[closest_subarr,0]-xy[0])**2+(psf_xys[closest_subarr,1]-xy[1])**2)<thresh_dist, "Closest sub-array too far!"
-        # psf_locs2=glob.glob(psf_locs[closest_subarr]+"/*")
-        # psf_info=pd.DataFrame()
-        # cols=[[None],["teff",0,5],["temp",0,5],["mjd",0,7],["expt",0,4],["n",0,-4]]
-        # for pl in psf_locs2:
-        #     psf_info=psf_info.append(pd.Series({cols[n][0]:float(pl.split('/')[-1].split("_")[n][cols[n][1]:cols[n][2]]) for n in range(len(cols)) if cols[n][0] is not None},name=pl.split('/')[-1]))
-        #10d
-        # best=np.argmin((psf_info['teff']/100-self.Teff[0]**(1/4)/100)**2 + \
-        #                 np.clip(0.1*psf_info['mjd']-0.1*subarr[1].header['T_STRT_M'],0,25)**2 + \
-        #                 2*np.log(np.clip(psf_info['expt'],1.5,60))**2)
-        #Determining which PSF file to use (if any)
-        # psf_file=psfs.loc[close_subarrs,0].values[np.nanargmin(abs(float(self.Teff[0])-psfs.loc[close_subarrs,3].values.astype(float)))]
-        # if psf_file is None:
-        #     make_psf=True
-        # else:
-        #     make_psf=False
-        
-        #Varying the fit rad so that bright stars have wider fit:
-        #fitrad=np.clip(int(25+5*np.round(3*(12.5-mag)/5)),25,60)
+        # folds = glob.glob(os.path.join(out_dir,fk,"Outdata","000??"))
+        # folds = {int(pf[0].split('/')[-1]):pf for pf in folds[0] if len(glob.glob(os.path.join(pf,"*.fits")))>0}
+        # n_max = list(folds.keys())[np.argmax(list(folds.keys()))]
         
         #Checking if we have an Outdata file but no PIPE outputs (in which case we delete)
-        if os.path.exists(os.path.join(out_dir,fk,"Outdata","00000")) and len(glob.glob(os.path.join(out_dir,fk,"Outdata","00000","*.fits")))==0:
+        if (os.path.exists(os.path.join(out_dir,fk,"Outdata","00000")) and len(glob.glob(os.path.join(out_dir,fk,"Outdata","00000","*.fits")))==0) or (os.path.exists(os.path.join(out_dir,fk,"Outdata")) and len(glob.glob(os.path.join(out_dir,fk,"Outdata","*")))==0):
             os.system("rm -r "+os.path.join(out_dir,fk,"Outdata"))
-        #Running PIPE:
-
-        # pps = PipeParam('WASP-12', '10208')
-        # pps.psf_score = None     # Can be used to decide how close to target library PSF needs to be
-        # pps.psf_min_num = 50   # Picks the X best PSF matches and do PCA for later fit
-        # pps.klip = 1                        # Number of PSF PCs
-        # pps.remove_static = True
-        # pps.smear_resid_sa = True
-        # pps.fitrad = 60
-        # pps.fit_bgstars = False    # Expensive if set to True, but better residuals
-        # pps.sa_optimise = False # Runs internal loop over some parameters to optimise extraction
-
-        # pc = PipeControl(pps)
-        # pc.process_eigen()
-
         if not os.path.exists(os.path.join(out_dir,fk,"Outdata")) or overwrite:
+            #os.system("mkdir "+os.path.join(out_dir,fk,"Outdata"))
+            #os.system("mkdir "+os.path.join(out_dir,fk,"Outdata","00000"))
             #Running PIPE:
             from pipe import PipeParam, PipeControl
-            pps = PipeParam(self.name, fk)
+            pps = PipeParam(self.name, fk)#, outdir=os.path.join(out_dir,fk,"Outdata","00000"))
             #pps.bgstars = True 
             pps.fit_bgstars = False
             #pps.limflux = 1e-5
@@ -896,12 +858,10 @@ class chexo_model():
         """
         #Initialising save name (and then checking if we can re-load the saved model fit):
         savefname="_che_only_fit_"+fk+"_trace"
-        if transittype=="fix":
-            savefname+="_fixtrans" 
-        elif transittype=="loose":
-            savefname+="_loosetrans" 
-        elif transittype=="none":
-            savefname+="_notrans" 
+        che_fk_save_name_dic = {'fix':'_fixtrans','loose':'_loosetrans','none':'_notrans'}
+        
+        if transittype in che_fk_save_name_dic:
+            savefname+=che_fk_save_name_dic[transittype]
         if force_no_dydt: savefname+="_notrend" 
 
         if not hasattr(self,'cheops_init_trace'):
@@ -948,7 +908,7 @@ class chexo_model():
         if not overwrite and os.path.exists(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl")):
             self.cheops_init_trace[savefname[1:]]=pickle.load(open(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl"),"rb"))
             print("Cheops pre-modelled trace exists for filekey=",fk," at",self.unq_name+savefname+".pkl")
-            return self.cheops_init_trace[savefname[1:]]
+            return savefname[1:]
         
         with pm.Model() as self.ichlc_models[fk]:
             #Adding planet model info if there's any transit in the lightcurve
@@ -1057,7 +1017,7 @@ class chexo_model():
             self.cheops_init_trace[savefname[1:]]= pmx.sample(tune=300, draws=400, chains=3, cores=3, start=comb_soln)
 
             pickle.dump(self.cheops_init_trace[savefname[1:]],open(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl"),"wb"))
-        return self.cheops_init_trace[savefname[1:]]
+        return savefname[1:]
 
     def init_cheops(self, force_no_dydt=False, make_detren_params_global=True, force_detrend_pars={}, **kwargs):
         """Initialising the Cheops data.
@@ -1132,10 +1092,10 @@ class chexo_model():
         for fk in self.cheops_filekeys:
             print("Performing Cheops-only minimisation with all detrending params for filekey ",fk)
             #Launching a PyMC3 model
-            trace = self.cheops_only_model(fk, include_transit=True, force_no_dydt=force_no_dydt,**kwargs)
+            tracename = self.cheops_only_model(fk, include_transit=True, force_no_dydt=force_no_dydt,**kwargs)
 
-            var_names=[var for var in trace.varnames if '__' not in var and np.product(trace[var].shape)<6*np.product(trace['cheops_logs'].shape)]
-            self.init_chefit_summaries[fk]=pm.summary(trace,var_names=var_names,round_to=7)
+            var_names=[var for var in self.cheops_init_trace[tracename].varnames if '__' not in var and np.product(self.cheops_init_trace[tracename][var].shape)<6*np.product(self.cheops_init_trace[tracename]['cheops_logs'].shape)]
+            self.init_chefit_summaries[fk]=pm.summary(self.cheops_init_trace[tracename],var_names=var_names,round_to=7)
 
             for par in self.init_che_linear_decorr_pars:
                 dfd_fitvalue=self.init_chefit_summaries[fk].loc["dfd"+par,'mean']
@@ -1267,20 +1227,20 @@ class chexo_model():
             self.model_comp[fk]={}
             #Only doing this comparison on filekeys which have transits (according to prior ephemerides):
             if np.any(self.cheops_lc[(self.cheops_lc['filekey']==fk)&self.cheops_lc['in_trans_all']]):
-                trace_w_trans=self.cheops_only_model(fk, transittype="loose", force_no_dydt=True, **kwargs)#, linpars=self.cheops_linear_decorrs[fk], quadpars=self.cheops_quad_decorrs[fk])
+                trace_w_trans_name = self.cheops_only_model(fk, transittype="loose", force_no_dydt=True, **kwargs)#, linpars=self.cheops_linear_decorrs[fk], quadpars=self.cheops_quad_decorrs[fk])
                 #trace_w_trans['log_likelihood']=trace_w_trans.out_llk_cheops
-                self.model_comp[fk]['tr_waic']  = pm.stats.waic(trace_w_trans)
+                self.model_comp[fk]['tr_waic']  = pm.stats.waic(self.cheops_init_trace[trace_w_trans_name])
                 #notrans_linpars=self.cheops_linear_decorrs[fk]+['time','deltaT'] if 'deltaT' in self.cheops_lc.columns else self.cheops_linear_decorrs[fk]+['time']
                 #notrans_quadpars=self.cheops_quad_decorrs[fk]+['time','deltaT'] if 'deltaT' in self.cheops_lc.columns else self.cheops_quad_decorrs[fk]+['time']
-                trace_no_trans=self.cheops_only_model(fk, transittype="none", force_no_dydt=False, **kwargs)#,linpars=notrans_linpars,quadpars=notrans_quadpars)
+                trace_no_trans_name = self.cheops_only_model(fk, transittype="none", force_no_dydt=False, **kwargs)#,linpars=notrans_linpars,quadpars=notrans_quadpars)
                 #trace_no_trans['log_likelihood']=trace_no_trans.out_llk_cheops
-                self.model_comp[fk]['notr_waic'] = pm.stats.waic(trace_no_trans)
-                self.model_comp[fk]['tr_loglik'] = np.max(trace_w_trans.out_llk_cheops)
-                self.model_comp[fk]['notr_loglik'] = np.max(trace_no_trans.out_llk_cheops)
+                self.model_comp[fk]['notr_waic'] = pm.stats.waic(self.cheops_init_trace[trace_no_trans_name])
+                self.model_comp[fk]['tr_loglik'] = np.max(self.cheops_init_trace[trace_w_trans_name].out_llk_cheops)
+                self.model_comp[fk]['notr_loglik'] = np.max(self.cheops_init_trace[trace_no_trans_name].out_llk_cheops)
                 self.model_comp[fk]['delta_loglik'] = (self.model_comp[fk]['tr_loglik'] - self.model_comp[fk]['notr_loglik'])
                 
-                self.model_comp[fk]['notr_BIC'] = self.model_comp[fk]['notr_waic']['p_waic'] * np.log(np.sum((self.cheops_lc['filekey']==fk)&self.cheops_lc['mask'])) - 2*np.log(np.max(trace_no_trans.out_llk_cheops))
-                self.model_comp[fk]['tr_BIC'] = self.model_comp[fk]['tr_waic']['p_waic'] * np.log(np.sum((self.cheops_lc['filekey']==fk)&self.cheops_lc['mask'])) - 2*np.log(np.max(trace_w_trans.out_llk_cheops))
+                self.model_comp[fk]['notr_BIC'] = self.model_comp[fk]['notr_waic']['p_waic'] * np.log(np.sum((self.cheops_lc['filekey']==fk)&self.cheops_lc['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_no_trans_name].out_llk_cheops))
+                self.model_comp[fk]['tr_BIC'] = self.model_comp[fk]['tr_waic']['p_waic'] * np.log(np.sum((self.cheops_lc['filekey']==fk)&self.cheops_lc['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_w_trans_name].out_llk_cheops))
                 self.model_comp[fk]['deltaBIC'] = self.model_comp[fk]['notr_BIC'] - self.model_comp[fk]['tr_BIC']
                 self.model_comp[fk]['BIC_pref_model']="transit" if self.model_comp[fk]['deltaBIC']<0 else "no_transit"
                 print(self.model_comp[fk]['notr_waic'].index)
@@ -1298,14 +1258,14 @@ class chexo_model():
                 #print("BIC prefers",self.model_comp[fk]['BIC_pref_model'],"( Delta BIC =",np.round(self.model_comp[fk]['deltaBIC'],2),"). WAIC prefers",self.model_comp[fk]['WAIC_pref_model']," ( Delta WAIC =",np.round(self.model_comp[fk]['deltaWAIC'],2),")")
                 
                 for pl in self.planets:
-                    if 'logror_'+pl in trace_w_trans.varnames:
-                        ror_info=[np.nanmedian(np.exp(trace_w_trans['logror_'+pl])),np.nanstd(np.exp(trace_w_trans['logror_'+pl]))]
+                    if 'logror_'+pl in self.cheops_init_trace[trace_w_trans_name].varnames:
+                        ror_info=[np.nanmedian(np.exp(self.cheops_init_trace[trace_w_trans_name]['logror_'+pl])),np.nanstd(np.exp(self.cheops_init_trace[trace_w_trans_name]['logror_'+pl]))]
                         sigdiff=abs(np.sqrt(self.planets[pl]['depth'])-ror_info[0])/ror_info[1]
                         pl_statement="For planet "+str(pl)+" the derived radius ratio is "+str(ror_info[0])[:7]+"±"+str(ror_info[1])[:7]+" which is "+str(sigdiff)[:4]+"-sigma from the expected value given TESS depth ("+str(np.sqrt(self.planets[pl]['depth']))[:7]+")"
                         print(pl_statement)
                         self.cheops_assess_statements[fk]+=[pl_statement]
-                self.plot_cheops(input_trace=trace_no_trans,show_detrend=show_detrend,fk=fk,transtype="none",**kwargs)
-                self.plot_cheops(input_trace=trace_w_trans,show_detrend=show_detrend,fk=fk,transtype="loose",**kwargs)
+                self.plot_cheops(tracename=trace_no_trans_name, show_detrend=show_detrend, fk=fk, **kwargs)
+                self.plot_cheops(tracename=trace_w_trans_name, show_detrend=show_detrend, fk=fk, **kwargs)
             elif np.any(self.cheops_lc[(self.cheops_lc['filekey']==fk)&(~self.cheops_lc['in_trans_all'])]):
                 print("No transit event during observation with fk ="+fk)
                 self.cheops_assess_statements[fk]=["There appears to be no transit event during observation with fk ="+fk+" according to ephemeris."]
@@ -1382,10 +1342,10 @@ class chexo_model():
             self.model_params['u_stars']={}
             for scope in self.ld_dists:
                 if self.constrain_lds:
-                    self.model_params['u_stars'][scope] = pm.Bound(pm.Normal, lower=0.0, upper=1.0)("u_star"+scope, 
-                                                mu=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1),
-                                                sd=np.clip(np.nanstd(self.ld_dists[scope],axis=0),0.1,1.0), 
-                                                shape=2, testval=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1))
+                    self.model_params['u_stars'][scope] = pm.Bound(pm.Normal, lower=0.0, upper=1.0)("u_star_"+scope, 
+                                                                    mu=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1),
+                                                                    sd=np.clip(np.nanstd(self.ld_dists[scope],axis=0),0.1,1.0), 
+                                                                    shape=2, testval=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1))
                 else:
                     self.model_params['u_stars'][scope] = xo.distributions.QuadLimbDark("u_star_"+scope, testval=np.array([0.3, 0.2]))
             # -------------------------------------------
@@ -1867,7 +1827,7 @@ class chexo_model():
                 self.model_params[scope+'_model_x']={}
                 for pl in self.planets:
                     self.model_params[scope+'_model_x'][pl] = pm.Deterministic(scope+"_model_x_"+pl, xo.LimbDarkLightCurve(self.model_params['u_stars'][scope]).get_light_curve(orbit=self.model_params['orbit'][pl], r=self.model_params['rpl'][pl]/109.2,
-                                                                                                        t=self.lc_fit[scope]['time'].values)[:,0]*1000/self.model_params[scope+'_mult'])
+                                                                                                                           t=self.lc_fit[scope]['time'].values)[:,0]*1000/self.model_params[scope+'_mult'])
                 self.model_params[scope+'_summodel_x'] = pm.Deterministic(scope+"_summodel_x", tt.sum([self.model_params[scope+'_model_x'][pl] for pl in self.planets],axis=0))
                 if self.fit_gp:
                     self.model_params[scope+'_llk'] = self.model_params[scope+'_gp'].marginal(scope+'_llk', observed=self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x'])
@@ -2087,74 +2047,186 @@ class chexo_model():
         latex_tab+="\\end{tabular}\n\\caption{List of CHEOPS observations.}\\ref{tab:cheops_dat}\n\\end{table}"
         return latex_tab
 
-    def make_lcs_timeseries(self,src):
-        self.models_out[src]=self.lcs[src].loc[self.lcs[src]['mask']]
-        if self.fit_gp:
-            if self.bin_oot:
-                #Need to interpolate to the smaller values
-                from scipy.interpolate import interp1d
-                for p in self.percentiles:
-                    #print(np.min(self.lcs[src].iloc[0]['time'])-0.5,self.lc_fit['time'][0],self.lc_fit['time'][-1],np.max(self.lcs[src].iloc[-1]['time'])+0.5))
-                    interpp=interp1d(np.hstack((np.min(self.lcs[src].iloc[0]['time'])-0.5,self.lc_fit[src]['time'].values,np.max(self.lcs[src].iloc[-1]['time'])+0.5)),
-                                        np.hstack((0,np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0),0)))
-                    #print(np.min(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values),np.max(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values),self.lcs[src].loc[self.lcs[src]['mask'],'time'].values[0],self.lcs[src].loc[self.lcs[src]['mask'],'time'].values[-1])
-                    self.models_out[src][src+"_gpmodel_"+p]=interpp(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values)
-            elif not self.cut_oot:
-                for p in self.percentiles:
-                    self.models_out[src][src+"_gpmodel_"+p]=np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0)
-            elif self.cut_oot:
-                for p in self.percentiles:
-                    self.models_out[src][src+"_gpmodel_"+p] = np.tile(np.nan,len(self.models_out[src]['time']))
-                    self.models_out[src][src+"_gpmodel_"+p][self.lcs[src]['near_trans']&self.lcs[src]['mask']] = np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0)
-            
-        for p in self.percentiles:
-            for pl in self.planets:
-                self.models_out[src][src+'_'+pl+"model_"+p]=np.zeros(np.sum(self.lcs[src]['mask']))
-                self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+'_'+pl+"model_"+p]=np.nanpercentile(self.trace[src+'_model_x_'+pl][:,self.lc_fit[src]['near_trans']],self.percentiles[p],axis=0)
-            self.models_out[src][src+"_allmodel_"+p]=np.zeros(np.sum(self.lcs[src]['mask']))
-            self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+"_allmodel_"+p]=np.nanpercentile(self.trace[src+'_summodel_x'][:,self.lc_fit[src]['near_trans']],self.percentiles[p],axis=0)
-
-    def make_cheops_timeseries(self):
-        self.models_out['cheops']=pd.DataFrame()
-        self.models_out['cheops_gap_models_out']=pd.DataFrame()
-
-        for col in ['time','flux','flux_err','phi','bg','centroidx','centroidy','deltaT','xoff','yoff','filekey']:
-            if col in self.cheops_lc.columns:
-                self.models_out['cheops'][col]=np.hstack([self.cheops_lc.loc[self.cheops_fk_mask[fk],col] for fk in self.cheops_filekeys])
-        if self.fit_phi_gp:
-            for p in self.percentiles:
-                self.models_out['cheops']['che_pred_gp_'+p]=np.hstack([np.nanpercentile(self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-                self.models_out['cheops']['che_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-        elif self.fit_phi_spline:
-            for p in self.percentiles:
-                self.models_out['cheops']['che_pred_gp_'+p]=np.hstack([np.nanpercentile(self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-                self.models_out['cheops']['che_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-                    #fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],axis=0)
-        self.models_out['cheops_gap_models_out']['time']=self.cheops_gap_timeseries
-        self.models_out['cheops_gap_models_out']['filekey']=self.cheops_gap_fks
-
-        for p in self.percentiles:
-            if self.fit_phi_gp:
-                self.models_out['cheops']['che_lindetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-            elif self.fit_phi_spline:
-                self.models_out['cheops']['che_lindetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-            for npl,pl in enumerate(self.planets):
-                if 'cheops_planets_x' in self.trace.varnames:
-                    self.models_out['cheops']['che_'+pl+"model_"+p]=np.nanpercentile(self.trace['cheops_planets_x'][:,self.cheops_lc['mask'],npl],self.percentiles[p],axis=0)
-                else:
-                    self.models_out['cheops']['che_'+pl+"model_"+p]=np.nanpercentile(self.trace['cheops_planets_x_'+pl][:,self.cheops_lc['mask']],self.percentiles[p],axis=0)
-                if 'cheops_planets_gaps_'+pl in self.trace.varnames:
-                    self.models_out['cheops_gap_models_out']['che_'+pl+"model_"+p]=np.nanpercentile(self.trace['cheops_planets_gaps_'+pl],self.percentiles[p],axis=0)
-
-            if 'cheops_planets_x' in self.trace.varnames:
-                self.models_out['cheops']['che_allplmodel_'+p]=np.nanpercentile(np.sum(self.trace['cheops_planets_x'][:,self.cheops_lc['mask'],:],axis=2),self.percentiles[p],axis=0)
+    def make_lcs_timeseries(self, src, overwrite=False):
+        """
+        Pandas dataframe with:
+         - tess_gpmodel_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - either fitted GP or pre-detrtended spline model
+         - tess_[b]model_[p] (where p is +2sig, +1sig, med, -1sig, -2sig; and [b] is for each planet) - fitted planetary models
+         - tess_allplmodel_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - combined planetary models
+         """
+        
+        if not hasattr(self,'models_out'):
+            self.models_out={}
+         
+        if src not in self.models_out or overwrite:
+            self.models_out[src]=self.lcs[src].loc[self.lcs[src]['mask']]
+            if self.fit_gp:
+                if self.bin_oot:
+                    #Need to interpolate to the smaller values
+                    from scipy.interpolate import interp1d
+                    if hasattr(self,'trace'):
+                        for p in self.percentiles:
+                            #print(np.min(self.lcs[src].iloc[0]['time'])-0.5,self.lc_fit['time'][0],self.lc_fit['time'][-1],np.max(self.lcs[src].iloc[-1]['time'])+0.5))
+                            interpp=interp1d(np.hstack((np.min(self.lcs[src].iloc[0]['time'])-0.5,self.lc_fit[src]['time'].values,np.max(self.lcs[src].iloc[-1]['time'])+0.5)),
+                                                np.hstack((0,np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0),0)))
+                            #print(np.min(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values),np.max(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values),self.lcs[src].loc[self.lcs[src]['mask'],'time'].values[0],self.lcs[src].loc[self.lcs[src]['mask'],'time'].values[-1])
+                            self.models_out[src][src+"_gpmodel_"+p]=interpp(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values)
+                    else:
+                        interpp=interp1d(np.hstack((np.min(self.lcs[src].iloc[0]['time'])-0.5,self.lc_fit[src]['time'].values,np.max(self.lcs[src].iloc[-1]['time'])+0.5)),
+                                            np.hstack((0,self.init_soln[src+'_gp_model_x'],0)))
+                        self.models_out[src][src+"_gpmodel_med"]=interpp(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values)
+                elif not self.cut_oot:
+                    if hasattr(self,'trace'):
+                        for p in self.percentiles:
+                            self.models_out[src][src+"_gpmodel_"+p]=np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0)
+                    else:
+                        self.models_out[src][src+"_gpmodel_med"]=self.init_soln[src+'_gp_model_x']
+                elif self.cut_oot:
+                    if hasattr(self,'trace'):
+                        for p in self.percentiles:
+                            self.models_out[src][src+"_gpmodel_"+p] = np.tile(np.nan,len(self.models_out[src]['time']))
+                            self.models_out[src][src+"_gpmodel_"+p][self.lcs[src]['near_trans']&self.lcs[src]['mask']] = np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0)
+                    else:
+                        p="med"
+                        self.models_out[src][src+"_gpmodel_"+p] = np.tile(np.nan,len(self.models_out[src]['time']))
+                        self.models_out[src][src+"_gpmodel_"+p][self.lcs[src]['near_trans']&self.lcs[src]['mask']] = self.init_soln[src+'_gp_model_x']
             else:
-                self.models_out['cheops']['che_'+pl+"model_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace['cheops_planets_x_'+pl][:,self.cheops_lc['mask']] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
-            self.models_out['cheops_gap_models_out']["che_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace['cheops_planets_gaps_'+pl] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
+                self.models_out[src][src+"_gpmodel_med"] = self.models_out[src]["spline"].values[:]
+            if hasattr(self,'trace'):
+                for p in self.percentiles:
+                    for pl in self.planets:
+                        self.models_out[src][src+'_'+pl+"model_"+p]=np.zeros(np.sum(self.lcs[src]['mask']))
+                        self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+'_'+pl+"model_"+p]=np.nanpercentile(self.trace[src+'_model_x_'+pl][:,self.lc_fit[src]['near_trans']],self.percentiles[p],axis=0)
+                    self.models_out[src][src+"_allplmodel_"+p]=np.zeros(np.sum(self.lcs[src]['mask']))
+                    self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+"_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace[src+'_model_x_'+pl][:,self.lc_fit[src]['near_trans']] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
+                    #self.models_out[src][src+"_allmodel_"+p]=self.models_out[src][src+"_gpmodel_"+p] if src+"_gpmodel_"+p in self.models_out[src] else self.models_out[src][src+"_gpmodel_med"]
+                    #self.models_out[src][src+"_allmodel_"+p]+=self.models_out[src][src+"_allplmodel_"+p].values
+            else:
+                p="med"
+                for pl in self.planets:
+                    self.models_out[src][src+'_'+pl+"model_"+p]=np.zeros(np.sum(self.lcs[src]['mask']))
+                    self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+'_'+pl+"model_"+p]=self.init_soln[src+'_model_x_'+pl][self.lc_fit[src]['near_trans']]
+                self.models_out[src][src+"_allplmodel_"+p]=np.sum(np.vstack([self.models_out[src][src+'_'+pl+"model_"+p] for pl in self.planets]),axis=0)
+                #self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+"_allplmodel_"+p]=np.sum(np.vstack([self.init_soln[src+'_model_x_'+pl][self.lc_fit[src]['near_trans']] for pl in self.planets]),axis=1)
+                #self.models_out[src][src+"_allmodel_"+p]=self.models_out[src][src+"_gpmodel_"+p]+self.models_out[src][src+"_allplmodel_"+p]
 
+    def make_cheops_timeseries(self, tracename=None, init_trace=None, fk=None, overwrite=False):
+        """
+        Pandas dataframe (self.models_out['cheops']) with:
+         - che_gpmodel_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - Fitted roll angle GP model in time axis
+         - che_pred_spline_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - Fitted roll angle spline model in time axis
+         - che_lindetrend_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - Linear decorrelation model predictions
+         - che_alldetrend_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - Combined spline/gp model with linear decorrelation
+         - che_[b]model_[p] (where p is +2sig, +1sig, med, -1sig, -2sig; and [b] is for each planet) - fitted planetary models
+         - che_allplmodel_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - combined planetary models
+        The final two are also included in the "cheops_gap_models_out" Pandas dataframe
+        """
+        if not hasattr(self,'models_out'):
+            self.models_out={}
+        if tracename is None and 'cheops' not in self.models_out or overwrite:
+            assert init_trace is None and fk is None, "We will use the default \'self.trace\' for the final CHEOPS model. For an intermediate trace, specify the trace type & filekey)"
+            self.models_out['cheops']=pd.DataFrame()
+            self.models_out['cheops_gap_models_out']=pd.DataFrame()
 
+            for col in ['time','flux','flux_err','phi','bg','centroidx','centroidy','deltaT','xoff','yoff','filekey']:
+                if col in self.cheops_lc.columns:
+                    self.models_out['cheops'][col]=np.hstack([self.cheops_lc.loc[self.cheops_fk_mask[fk],col] for fk in self.cheops_filekeys])
+            if self.fit_phi_gp:
+                if hasattr(self,'trace'):
+                    for p in self.percentiles:
+                        self.models_out['cheops']['che_pred_gp_'+p]=np.hstack([np.nanpercentile(self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+                else:
+                    self.models_out['cheops']['che_pred_gp_med']=np.hstack([self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
+
+            elif self.fit_phi_spline:
+                if hasattr(self,'trace'):
+                    for p in self.percentiles:
+                        self.models_out['cheops']['che_pred_spline_'+p]=np.hstack([np.nanpercentile(self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+                        #fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],axis=0)
+                else:
+                    self.models_out['cheops']['che_pred_spline_med']=np.hstack([self.init_soln['spline_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
+
+            self.models_out['cheops_gap_models_out']['time']=self.cheops_gap_timeseries
+            self.models_out['cheops_gap_models_out']['filekey']=self.cheops_gap_fks
+            if hasattr(self,'trace'):
+                for p in self.percentiles:
+                    self.models_out['cheops']['che_lindetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+                    if self.fit_phi_gp:
+                        self.models_out['cheops']['che_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+
+                    elif self.fit_phi_spline:
+                        self.models_out['cheops']['che_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+                    
+                    for npl,pl in enumerate(self.planets):
+                        if 'cheops_planets_x' in self.trace.varnames:
+                            self.models_out['cheops']['che_'+pl+"model_"+p]=np.nanpercentile(self.trace['cheops_planets_x'][:,self.cheops_lc['mask'],npl],self.percentiles[p],axis=0)
+                        else:
+                            self.models_out['cheops']['che_'+pl+"model_"+p]=np.nanpercentile(self.trace['cheops_planets_x_'+pl][:,self.cheops_lc['mask']],self.percentiles[p],axis=0)
+                        if 'cheops_planets_gaps_'+pl in self.trace.varnames:
+                            self.models_out['cheops_gap_models_out']['che_'+pl+"model_"+p]=np.nanpercentile(self.trace['cheops_planets_gaps_'+pl],self.percentiles[p],axis=0)
+
+                    if 'cheops_planets_x' in self.trace.varnames:
+                        self.models_out['cheops']['che_allplmodel_'+p]=np.nanpercentile(np.sum(self.trace['cheops_planets_x'][:,self.cheops_lc['mask'],:],axis=2),self.percentiles[p],axis=0)
+                    else:
+                        self.models_out['cheops']["che_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace['cheops_planets_x_'+pl][:,self.cheops_lc['mask']] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
+                    self.models_out['cheops_gap_models_out']["che_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace['cheops_planets_gaps_'+pl] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
+            else:
+                p="med"
+                self.models_out['cheops']['che_lindetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk] for fk in self.cheops_filekeys])
+                if self.fit_phi_gp:
+                    self.models_out['cheops']['che_alldetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk]+self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
+
+                elif self.fit_phi_spline:
+                    self.models_out['cheops']['che_alldetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk]+self.init_soln['spline_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
+                for npl,pl in enumerate(self.planets):
+                    if 'cheops_planets_x' in self.init_soln:
+                        self.models_out['cheops']['che_'+pl+"model_"+p]=self.init_soln['cheops_planets_x'][self.cheops_lc['mask'],npl]
+                    else:
+                        self.models_out['cheops']['che_'+pl+"model_"+p]=self.init_soln['cheops_planets_x_'+pl][self.cheops_lc['mask']]
+                    if 'cheops_planets_gaps_'+pl in self.init_soln:
+                        self.models_out['cheops_gap_models_out']['che_'+pl+"model_"+p]=self.init_soln['cheops_planets_gaps_'+pl]
+
+                if 'cheops_planets_x' in self.init_soln:
+                    self.models_out['cheops']['che_allplmodel_'+p]=np.sum(self.init_soln['cheops_planets_x'][self.cheops_lc['mask'],:],axis=1)
+                else:
+                    self.models_out['cheops']['che_allplmodel_'+p]=np.sum(np.vstack([self.models_out['cheops']['che_'+pl+"model_"+p] for pl in self.planets]),axis=0)
+                self.models_out['cheops_gap_models_out']["che_allplmodel_"+p]=np.sum(np.vstack([self.init_soln['cheops_planets_gaps_'+pl] for pl in self.planets]),axis=0)
+        elif tracename not in self.models_out or overwrite:
+            #We have intermediate CHEOPS trace which we want to save in the same format as the final CHEOPS trace above (i.e. for plotting)
+            self.models_out[tracename]=pd.DataFrame()
+            #self.models_out[tracename+'_gap_models_out']=pd.DataFrame()
+            for col in ['time','flux','flux_err','filekey']:
+                if col in self.cheops_lc.columns:
+                    self.models_out[tracename][col]=self.cheops_lc.loc[self.cheops_fk_mask[fk],col]
+            if type(init_trace)==pm.backends.base.MultiTrace:
+                for p in self.percentiles:
+                    self.models_out[tracename]['che_lindetrend_'+p]=np.nanpercentile(init_trace['cheops_flux_cor_'+fk],self.percentiles[p],axis=0)
+                    self.models_out[tracename]['che_alldetrend_'+p]=self.models_out[tracename]['che_lindetrend_'+p].values[:]
+                    self.models_out[tracename]["che_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                    for npl,pl in enumerate(self.planets):
+                        if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
+                            self.models_out[tracename]['che_'+pl+"model_"+p]=np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0)
+                        else:
+                            self.models_out[tracename]['che_'+pl+"model_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                        self.models_out[tracename]["che_allplmodel_"+p]+=self.models_out[tracename]['che_'+pl+"model_"+p]
+            elif type(init_trace)==dict:
+                p="med"
+                self.models_out[tracename]['che_lindetrend_'+p]=init_trace['cheops_flux_cor_'+fk]
+                self.models_out[tracename]['che_alldetrend_'+p]=self.models_out[tracename]['che_lindetrend_'+p].values[:]
+                self.models_out[tracename]["che_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                for npl,pl in enumerate(self.planets):
+                    if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
+                        self.models_out[tracename]['che_'+pl+"model_"+p]=np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0)
+                    else:
+                        self.models_out[tracename]['che_'+pl+"model_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                    self.models_out[tracename]["che_allplmodel_"+p]+=self.models_out[tracename]['che_'+pl+"model_"+p]
+            self.models_out[tracename+'_gap_models_out']=self.models_out[tracename] #Setting these to be identical
    #cheops_planets_x
+
     def make_rv_timeseries(self):
+
+        if not hasattr(self,'models_out'):
+            self.models_out={}
         self.models_out['rv']=self.rvs
         self.models_out['rv_t']=pd.DataFrame({'time':self.rv_t})
         for p in self.percentiles:
@@ -2349,10 +2421,10 @@ class chexo_model():
         with open(os.path.join(self.save_file_loc,self.name,self.unq_name+"_trace_modeltable.tex"),'w') as f:
             f.write('\n'.join(table))
 
-    def save_timeseries(self,overwrite=False):
-        assert hasattr(self,'trace'), "Must have run an MCMC"
+    def make_timeseries(self, overwrite=False):
+        #assert hasattr(self,'trace'), "Must have run an MCMC"
         
-        if not hasattr(self,'models_out') or overwrite:
+        if not hasattr(self,'models_out'):
             self.models_out={}
         for src in self.lcs:
             if src not in self.models_out or overwrite:
@@ -2362,7 +2434,9 @@ class chexo_model():
         
         if hasattr(self,'rvs') and ('rvs' not in self.models_out or overwrite):
             self.make_rv_timeseries()
-        
+
+    def save_timeseries(self,**kwargs):
+        self.make_timeseries(**kwargs)
         for mod in self.models_out:
             self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name,self.unq_name+"_"+mod+"_timeseries.csv"))
     
@@ -2475,76 +2549,34 @@ class chexo_model():
         del bytes_out
         #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
 
-    def plot_rollangle_gps(self,save=True,savetype='png'):
-        assert self.fit_phi_gp
-        plt.figure()
-        if not hasattr(self,'trace'):
-            yoffset=np.nanmedian([5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.init_soln['cheops_summodel_x_'+fk]) for fk in self.cheops_filekeys])
-            for ifk,fk in enumerate(self.cheops_filekeys):
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'],
-                        yoffset*ifk+self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.init_soln['cheops_summodel_x_'+fk],
-                        ".k",markersize=1.33,alpha=0.4)
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                         yoffset*ifk+self.init_soln['gp_rollangle_model_phi_'+fk],'-',alpha=0.45,linewidth=4)
-                         #np.sort(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi']),
-                         #yoffset*ifk+self.init_soln['gp_rollangle_model_phi_'+fk][np.argsort(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'])],':') #[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
-        else:
-            yoffset=np.nanmedian([5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-np.nanmedian(self.trace['cheops_summodel_x_'+fk],axis=0)) for fk in self.cheops_filekeys])
-            for ifk,fk in enumerate(self.cheops_filekeys):
+    def plot_rollangle_model(self,save=True,savetype='png'):
+        
+        if not hasattr(self,"models_out") or "cheops" not in self.models_out or (hasattr(self,'trace') and "che_lindetrend_+1sig" not in self.models_out["cheops"]):
+            self.make_cheops_timeseries()
 
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'],
-                            yoffset*ifk+self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux'] - \
-                            np.nanmedian(self.trace['cheops_summodel_x_'+fk],axis=0),
-                        ".k",markersize=1.33,alpha=0.4)
-                plt.fill_between(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                                 yoffset*ifk+np.nanpercentile(self.trace['gp_rollangle_model_phi_'+fk],5,axis=0),
-                                 yoffset*ifk+np.nanpercentile(self.trace['gp_rollangle_model_phi_'+fk],95,axis=0),alpha=0.15,color='C2')
-                plt.fill_between(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                                 yoffset*ifk+np.nanpercentile(self.trace['gp_rollangle_model_phi_'+fk],16,axis=0),
-                                 yoffset*ifk+np.nanpercentile(self.trace['gp_rollangle_model_phi_'+fk],84,axis=0),alpha=0.15,color='C2')
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                         yoffset*ifk+np.nanmedian(self.trace['gp_rollangle_model_phi_'+fk],axis=0),'-',alpha=0.6,c='C2') #[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
+        modname="gp" if self.fit_phi_gp else "spline"
+        assert "che_pred_"+modname+"_med" in self.models_out["cheops"], "Must have "+modname+" in saved timeseries."
+
+        plt.figure()
+        yoffset=5*np.std(self.models_out["cheops"]['flux']-(self.models_out["cheops"]['che_lindetrend_med']+self.models_out["cheops"]['che_allplmodel_med']))
+        for ifk,fk in enumerate(self.cheops_filekeys):
+            fk_ix=self.models_out["cheops"]['filekey']==fk
+            phi=self.models_out['cheops'].loc[fk_ix,'phi']
+            plt.plot(phi, yoffset*ifk+self.models_out['cheops'].loc[fk_ix,'flux']-self.models_out['cheops'].loc[fk_ix,'che_lindetrend_med']-self.models_out["cheops"].loc[fk_ix,'che_allplmodel_med'],
+                    ".k",markersize=1.33,alpha=0.4)
+            if "che_pred_"+modname+"_+1sig" in self.models_out['cheops']:
+                plt.fill_between(np.sort(phi),yoffset*ifk+self.models_out['cheops'].loc[fk_ix,"che_pred_"+modname+"_-2sig"].values[np.argsort(phi)],
+                                 yoffset*ifk+self.models_out['cheops'].loc[fk_ix,"che_pred_"+modname+"_+2sig"].values[np.argsort(phi)],alpha=0.15,color='C'+str(int(ifk)))
+                plt.fill_between(np.sort(phi),yoffset*ifk+self.models_out['cheops'].loc[fk_ix,"che_pred_"+modname+"_-1sig"].values[np.argsort(phi)],
+                                 yoffset*ifk+self.models_out['cheops'].loc[fk_ix,"che_pred_"+modname+"_+1sig"].values[np.argsort(phi)],alpha=0.15,color='C'+str(int(ifk)))
+            plt.plot(np.sort(phi),yoffset*ifk+self.models_out['cheops'].loc[fk_ix,"che_pred_"+modname+"_med"].values[np.argsort(phi)],'-',alpha=0.45,linewidth=4,color='C'+str(int(ifk)))
         plt.xlabel("roll angle [deg]")
         plt.ylabel("Flux [ppt]")
         plt.ylim(-1*yoffset,(len(self.cheops_filekeys))*yoffset)
         if save:
-            plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+"_rollanglegp_plots."+savetype))
-   
-    def plot_rollangle_splines(self,save=True,savetype='png'):
-        plt.figure()
-        if not hasattr(self,'trace'):
-            yoffset=np.nanmedian([5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.init_soln['cheops_summodel_x_'+fk]) for fk in self.cheops_filekeys])
-            for ifk,fk in enumerate(self.cheops_filekeys):
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'],
-                        yoffset*ifk+self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.init_soln['cheops_summodel_x_'+fk],
-                        ".k",markersize=1.33,alpha=0.4)
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                         yoffset*ifk+self.init_soln['spline_model_phi_'+fk],'-',alpha=0.45,linewidth=4)
-                         #np.sort(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi']),
-                         #yoffset*ifk+self.init_soln['gp_rollangle_model_phi_'+fk][np.argsort(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'])],':') #[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
-        else:
-            yoffset=np.nanmedian([5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-np.nanmedian(self.trace['cheops_summodel_x_'+fk],axis=0)) for fk in self.cheops_filekeys])
-            for ifk,fk in enumerate(self.cheops_filekeys):
+            plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+"_rollangle"+modname+"_plots."+savetype))
 
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'],
-                            yoffset*ifk+self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux'] - \
-                            np.nanmedian(self.trace['cheops_summodel_x_'+fk],axis=0),
-                        ".k",markersize=1.33,alpha=0.4)
-                plt.fill_between(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                                 yoffset*ifk+np.nanpercentile(self.trace['spline_model_phi_'+fk],5,axis=0),
-                                 yoffset*ifk+np.nanpercentile(self.trace['spline_model_phi_'+fk],95,axis=0),alpha=0.15,color='C2')
-                plt.fill_between(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                                 yoffset*ifk+np.nanpercentile(self.trace['spline_model_phi_'+fk],16,axis=0),
-                                 yoffset*ifk+np.nanpercentile(self.trace['spline_model_phi_'+fk],84,axis=0),alpha=0.15,color='C2')
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'phi'].values[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values.astype(int)],
-                         yoffset*ifk+np.nanmedian(self.trace['spline_model_phi_'+fk],axis=0),'-',alpha=0.6,c='C2') #[self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
-        plt.xlabel("roll angle [deg]")
-        plt.ylabel("Flux [ppt]")
-        plt.ylim(-1*yoffset,(len(self.cheops_filekeys))*yoffset)
-        if save:
-            plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+"_rollanglespline_plots."+savetype))
-
-    def plot_cheops(self, save=True, savetype='png', input_trace=None, fk='all', show_detrend=False, transtype="set",
+    def plot_cheops(self, save=True, savetype='png', tracename=None, fk='all', show_detrend=False,
                     ylim=None, dynamic_plot_resizing=True, save_suffix="", transparent=False, **kwargs):
         """Plot cheops lightcurves with model
 
@@ -2567,83 +2599,52 @@ class chexo_model():
 
         #plt.plot(cheops_x, ,'.')
         plt.figure(figsize=(6+len(self.cheops_filekeys)*4/3,4))
-        self.chmod={}
-        self.chplmod={}
 
-        assert transtype in ['set','loose','none'], "`transtype` must be either set from TESS (set), loosely left to fit (loose), or fixed as no transit (none)"
-        if transtype!='set':
-            save_suffix+="_"+transtype
+        if tracename is not None:
+            assert fk!="all", "to plot only loose or no transit models, need to only plot individual filekeys (i.e. set \'fk=PR...\')"
+            save_suffix+="_"+np.array([f for f in ['fixtrans','loosetrans','notrans'] if f in tracename])[0]
+            if tracename not in self.models_out:
+                self.make_cheops_timeseries(tracename = tracename, fk=fk, init_trace=self.cheops_init_trace[tracename])
+        else:
+            tracename="cheops"
+            if not hasattr(self,'models_out') or "cheops" not in self.models_out:
+                self.make_cheops_timeseries()
+        
 
         if fk=='all':
             fkloop=self.cheops_filekeys
         else:
+            save_suffix+='_'+fk
             fkloop=[fk]
         for n,fk in enumerate(fkloop):
-            if not hasattr(self,'trace') and input_trace is None:
-                if hasattr(self,'init_soln'):
-                    yoffset=np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.init_soln['cheops_summodel_x_'+fk])
-                elif fk!='all':
-                    init_trace_keys=np.array(list(self.cheops_init_trace.keys()))[np.where([fk in t for t in self.cheops_init_trace])[0]]
-                    if transtype=="set":
-                        init_trace_loc=[f for f in init_trace_keys if "fixtrans" in f][0]
-                    elif transtype=="loose":
-                        init_trace_loc=[f for f in init_trace_keys if "loosetrans" in f][0]
-                    elif transtype=="none":
-                        init_trace_loc=[f for f in init_trace_keys if "notrans" in f][0]
-                    yoffset=5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-np.nanmedian(self.cheops_init_trace[init_trace_loc]['cheops_summodel_x_'+fk],axis=0))
-            elif input_trace is None:
-                yoffset=5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-np.nanmedian(self.trace['cheops_summodel_x_'+fk],axis=0))
-            else:
-                yoffset=5*np.std(self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-np.nanmedian(input_trace['cheops_summodel_x_'+fk],axis=0))
-        
-            n_pts=np.sum(self.cheops_fk_mask[fk])
-            raw_alpha=np.clip(3*(n_pts)**(-0.4),0.02,0.99)
+            fk_ix=self.models_out[tracename]['filekey']==fk
+            fk_gap_ix=self.models_out[tracename+"_gap_models_out"]['filekey']==fk
 
-            if not hasattr(self,'trace') and input_trace is None:
-                if hasattr(self,'init_soln'):
-                    self.chmod[fk]=[None,None,None,None,None]
-                    self.chmod[fk][2]=self.init_soln['cheops_flux_cor_'+str(fk)]
-                    if self.fit_phi_gp:
-                        self.chmod[fk][2]+=self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
-                    elif self.fit_phi_spline:
-                        self.chmod[fk][2]+=self.init_soln['spline_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
-                elif fk!='all':
-                    self.chmod[fk]=np.nanpercentile(self.cheops_init_trace[init_trace_loc]['cheops_flux_cor_'+fk],list(self.percentiles.values()),axis=0)
-
-            elif hasattr(self,'trace') and input_trace is None:
-                if self.fit_phi_gp:
-                    self.chmod[fk]=np.nanpercentile(self.trace['cheops_flux_cor_'+str(fk)]+self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],list(self.percentiles.values()),axis=0)
-                else:
-                    self.chmod[fk]=np.nanpercentile(self.trace['cheops_flux_cor_'+str(fk)],list(self.percentiles.values()),axis=0)
-            else:
-                if 'gp_rollangle_model_phi_'+str(fk) in input_trace.varnames:
-                    self.chmod[fk]=np.nanpercentile(input_trace['cheops_flux_cor_'+str(fk)]+input_trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],list(self.percentiles.values()),axis=0)
-                elif 'spline_model_phi_'+str(fk) in input_trace.varnames:
-                    self.chmod[fk]=np.nanpercentile(input_trace['cheops_flux_cor_'+str(fk)]+input_trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],list(self.percentiles.values()),axis=0)
-                else:
-                    self.chmod[fk]=np.nanpercentile(input_trace['cheops_flux_cor_'+str(fk)],list(self.percentiles.values()),axis=0)
+            yoffset=3*np.std(self.models_out[tracename].loc[fk_ix,'flux']-(self.models_out[tracename].loc[fk_ix,'che_alldetrend_med']+self.models_out[tracename].loc[fk_ix,'che_allplmodel_med']))
+            n_pts=np.sum(fk_ix)
+            raw_alpha=np.clip(6*(n_pts)**(-0.4),0.02,0.99)
             spacing=10
             if len(fkloop)>2 & len(fkloop)<5:
                 spacing=5
             elif len(fkloop)>=5:
                 spacing=2
-
+            
             if show_detrend:
                 plt.subplot(2,len(fkloop),1+n)
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], 
-                        self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux'], '.k',markersize=3.5,alpha=raw_alpha,zorder=1)
-                binlc = bin_lc_segment(np.column_stack((self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], 
-                                                        self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux'],
-                                                        self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux_err'])),1/120)
+                plt.plot(self.models_out[tracename].loc[fk_ix,"time"],
+                         self.models_out[tracename].loc[fk_ix,"flux"], '.k',markersize=3.5,alpha=raw_alpha,zorder=1)
+                binlc = bin_lc_segment(np.column_stack((self.models_out[tracename].loc[fk_ix,"time"],
+                                                        self.models_out[tracename].loc[fk_ix,"flux"],
+                                                        self.models_out[tracename].loc[fk_ix,"flux_err"])),1/120)
                 plt.errorbar(binlc[:,0], binlc[:,1], yerr=binlc[:,2], fmt='.',color='C3',markersize=10,zorder=2,alpha=0.75)
 
-                plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], yoffset+self.chmod[fk][2],'.',
+                plt.plot(self.models_out[tracename].loc[fk_ix,"time"], yoffset+self.models_out[tracename].loc[fk_ix,"che_alldetrend_med"],'.',
                          markersize=3.5,c='C1',alpha=raw_alpha,zorder=5)
-                if hasattr(self,'trace'):
-                    plt.fill_between(self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], 
-                                    yoffset+self.chmod[fk][0], yoffset+self.chmod[fk][4],color='C0',alpha=0.15,zorder=3)
-                    plt.fill_between(self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], 
-                                    yoffset+self.chmod[fk][1], yoffset+self.chmod[fk][3],color='C0',alpha=0.15,zorder=4)
+                if "che_alldetrend_+1sig" in self.models_out[tracename]:
+                    plt.fill_between(self.models_out[tracename].loc[fk_ix,"time"], yoffset+self.models_out[tracename].loc[fk_ix,"che_alldetrend_-2sig"],
+                                     yoffset+self.models_out[tracename].loc[fk_ix,"che_alldetrend_+2sig"],color='C0',alpha=0.15,zorder=3)
+                    plt.fill_between(self.models_out[tracename].loc[fk_ix,"time"], yoffset+self.models_out[tracename].loc[fk_ix,"che_alldetrend_-1sig"],
+                                     yoffset+self.models_out[tracename].loc[fk_ix,"che_alldetrend_+1sig"],color='C0',alpha=0.15,zorder=4)
                 lims=np.nanpercentile(binlc[:,1],[1,99])
                 if ylim is None:
                     plt.ylim(lims[0]-0.66*yoffset,lims[1]+1.5*yoffset)
@@ -2661,73 +2662,41 @@ class chexo_model():
                     plt.ylabel("flux [ppt]")
             else:
                 plt.subplot(1,len(fkloop),1+n)
-            plt.plot(self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], 
-                     self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.chmod[fk][2],
+            plt.plot(self.models_out[tracename].loc[fk_ix,"time"],
+                     self.models_out[tracename].loc[fk_ix,"flux"]-self.models_out[tracename].loc[fk_ix,"che_alldetrend_med"],
                     '.k',alpha=raw_alpha,markersize=3.5,zorder=1)
-            binlc = bin_lc_segment(np.column_stack((self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'], 
-                                                    self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux']-self.chmod[fk][2],
-                                                    self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux_err'])),1/120)
+            binlc = bin_lc_segment(np.column_stack((self.models_out[tracename].loc[fk_ix,'time'], 
+                                                    self.models_out[tracename].loc[fk_ix,'flux']-self.models_out[tracename].loc[fk_ix,"che_alldetrend_med"],
+                                                    self.models_out[tracename].loc[fk_ix,'flux_err'])),1/120)
             plt.errorbar(binlc[:,0], binlc[:,1], yerr=binlc[:,2], c='C3', fmt='.',markersize=10, zorder=2, alpha=0.8)
             if n==0:
                 plt.ylabel("flux [ppt]")
-            self.chplmod[fk]={}
-            pl_time=np.hstack((self.cheops_lc.loc[self.cheops_lc['filekey']==fk,'time'].values,
-                                self.cheops_gap_timeseries[self.cheops_gap_fks==fk]))
-            as_pl_time=np.argsort(pl_time)
-
             for npl,pl in enumerate(self.planets):
-                if not hasattr(self,'trace') and input_trace is None:
-                    if hasattr(self,'init_soln') and "cheops_planets_x_"+pl in self.init_soln:
-                        #cheops_comb_timeseries_sort
-                        #cheops_gap_timeseries
-                        self.chplmod[fk][pl]=[None,None,np.hstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_lc['filekey']==fk],
-                                                                self.init_soln['cheops_planets_gaps_'+pl][self.cheops_gap_fks==fk]]), None,None]
-                    elif 'cheops_planets_x_'+pl+"_"+fk in self.cheops_init_trace[init_trace_loc].varnames:
-                        #We don't have a gap model for the cheops_init_trace, so  
-                        self.chplmod[fk][pl]=np.hstack([np.nanpercentile(self.cheops_init_trace[init_trace_loc]['cheops_planets_x_'+pl+"_"+fk][:,:],list(self.percentiles.values()),axis=0),
-                                                        np.tile(np.nan,(5,np.sum(self.cheops_gap_fks==fk)))])
-                elif hasattr(self,'trace') and input_trace is None and "cheops_planets_x_"+pl in self.trace.varnames:
-                    self.chplmod[fk][pl]=np.nanpercentile(np.hstack([self.trace['cheops_planets_x_'+pl][:,self.cheops_lc['filekey']==fk],
-                                                                    self.trace['cheops_planets_gaps_'+pl][:,self.cheops_gap_fks==fk]]),
-                                                          list(self.percentiles.values()),axis=0)
-                elif input_trace is not None and "cheops_planets_x_"+pl+"_"+fk in input_trace.varnames:
-                    self.chplmod[fk][pl]=np.tile(np.nan,(5,len(pl_time)))
-                    # print(len(pl_time),
-                    #       input_trace['cheops_planets_x'][:,:,npl].shape,
-                    #       np.sum(np.hstack((self.cheops_lc['mask'],np.tile(False,np.sum(self.cheops_gap_fks==fk))))&\
-                    #       (np.hstack((self.cheops_lc['filekey'],np.tile('',np.sum(self.cheops_gap_fks==fk))))==fk)))
-
-                    self.chplmod[fk][pl][:,np.hstack((self.cheops_lc['mask'][self.cheops_lc['filekey']==fk],np.tile(False,np.sum(self.cheops_gap_fks==fk))))] = np.nanpercentile(input_trace['cheops_planets_x_'+pl+"_"+fk][:,:],
-                    #self.chplmod[fk][pl][:,np.hstack((self.cheops_lc['mask'],np.tile(False,np.sum(self.cheops_gap_fks==fk))))&\
-                    #                     (np.hstack((self.cheops_lc['filekey'],np.tile('',np.sum(self.cheops_gap_fks==fk))))==fk)] = np.nanpercentile(input_trace['cheops_planets_x'][:,:,npl],
-                                                                                                                                                    list(self.percentiles.values()),axis=0)
-                else:
-                    self.chplmod[fk][pl]=[None,None,np.zeros(np.sum(self.cheops_lc['filekey']==fk)),None,None]
-
-                if np.any(self.chplmod[fk][pl][2]<-1e-5):
+                if np.any(self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_med"]<-1e-5):
                     #print(np.shape(pl_time),self.chplmod[fk][pl][2].shape,as_pl_time.shape)
-                    plt.plot(np.sort(pl_time),self.chplmod[fk][pl][2][as_pl_time],
-                                '--',c='C'+str(5+2*npl),linewidth=3,alpha=0.6,zorder=10)
-                    if self.chplmod[fk][pl][0] is not None:
-                        plt.fill_between(np.sort(pl_time), 
-                                        self.chplmod[fk][pl][0][as_pl_time],self.chplmod[fk][pl][4][as_pl_time],
-                                        color='C'+str(4+2*npl),alpha=0.15,zorder=6)
-                        plt.fill_between(np.sort(pl_time), 
-                                        self.chplmod[fk][pl][1][as_pl_time],self.chplmod[fk][pl][3][as_pl_time],
-                                        color='C'+str(4+2*npl),alpha=0.15,zorder=7)
-            if np.all([np.all(self.chplmod[fk][pl][2]>-1e-5) for pl in self.planets]):
+                    modtime=np.hstack([self.models_out[tracename].loc[fk_ix,"time"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"time"]])
+                    modflux=np.hstack([self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_med"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"che_"+pl+"model_med"]])
+                    plt.plot(np.sort(modtime),modflux[np.argsort(modtime)],'--', c='C'+str(5+2*npl), linewidth=3, alpha=0.6, zorder=10)
+                    if "che_"+pl+"model_+1sig" in self.models_out[tracename+"_gap_models_out"]:
+                        modflux2sig=[np.hstack([self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_-2sig"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"che_"+pl+"model_-2sig"]]),
+                                     np.hstack([self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_+2sig"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"che_"+pl+"model_+2sig"]])]
+                        plt.fill_between(np.sort(modtime),modflux2sig[0][np.argsort(modtime)],modflux2sig[1][np.argsort(modtime)],
+                                         color='C'+str(4+2*npl), alpha=0.15, zorder=6)
+                        modflux1sig=[np.hstack([self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_-1sig"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"che_"+pl+"model_-1sig"]]),
+                                     np.hstack([self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_+1sig"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"che_"+pl+"model_+1sig"]])]
+                        plt.fill_between(np.sort(modtime),modflux1sig[0][np.argsort(modtime)],modflux1sig[1][np.argsort(modtime)],
+                                         color='C'+str(4+2*npl), alpha=0.15, zorder=7)
+            if np.all(self.models_out[tracename].loc[fk_ix,"che_allplmodel_med"]>-1e-5):
                 #Plotting a flat line only if none of the planets have any transits for this fk:
-                plt.plot(np.sort(pl_time),np.zeros(len(pl_time)), '--',c='C'+str(4+2*npl),linewidth=3,alpha=0.6,zorder=10)
+                plt.plot(self.models_out[tracename].loc[fk_ix,'time'], np.zeros(np.sum(fk_ix)), '--',c='C'+str(4+2*npl),linewidth=3,alpha=0.6,zorder=10)
 
-            if np.sum([np.any(self.chplmod[fk][pl][2]<-1e-4) for pl in self.planets])>1:
+            if np.sum([np.any(self.models_out[tracename].loc[fk_ix,"che_"+pl+"model_med"]<-1e-5) for pl in self.planets])>1:
                 #Multiple transits together - we need a summed model
-                print(len(as_pl_time),self.chplmod[fk][pl][2].shape)
-                print([self.chplmod[fk][pl][2][as_pl_time] for pl in self.planets])
-                print(len(np.sort(pl_time)),{pl:len(self.chplmod[fk][pl][2][as_pl_time]) for pl in self.planets})
-                plt.plot(np.sort(pl_time),np.sum([self.chplmod[fk][pl][2][as_pl_time] for pl in self.planets],axis=0),
-                        '--',linewidth=1.4,alpha=1,zorder=10,color='C9')
+                modtime=np.hstack([self.models_out[tracename].loc[fk_ix,"time"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"time"]])
+                modallpl=np.hstack([self.models_out[tracename].loc[fk_ix,"che_allplmodel_med"],self.models_out[tracename+"_gap_models_out"].loc[fk_gap_ix,"che_allplmodel_med"]])
+                plt.plot(np.sort(modtime),modallpl[np.argsort(modtime)],'--', linewidth=1.4, alpha=1, zorder=10, color='C9')
             if ylim is None:
-                plt.ylim(np.nanmin([np.nanmin(self.chplmod[fk][pl][2]) for pl in self.planets])-yoffset*0.33,yoffset*0.33)
+                plt.ylim(np.nanmin(self.models_out[tracename].loc[fk_ix,"che_allplmodel_med"])-yoffset*0.33,yoffset*0.33)
             else:
                 plt.ylim(ylim)
             plt.xlabel("Time [BJD]")
@@ -2736,15 +2705,12 @@ class chexo_model():
             else:
                 plt.gca().set_ylabel("Flux [ppt]")
             
-            plt.gca().set_xticks(np.arange(np.ceil(np.nanmin(pl_time)*spacing)/spacing,np.max(pl_time),1/spacing))
+            plt.gca().set_xticks(np.arange(np.ceil(np.nanmin(self.models_out[tracename].loc[fk_ix,"time"])*spacing)/spacing,np.max(self.models_out[tracename].loc[fk_ix,"time"]),1/spacing))
             plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%.1f'))
 
         plt.subplots_adjust(wspace=0.05,hspace=0.05)
         if save:
-            if fk=='all':   
-                plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+save_suffix+"_cheops_plots."+savetype),transparent=transparent)
-            else:
-                plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+"_"+fk+save_suffix+"_cheops_plots."+savetype),transparent=transparent)
+            plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+save_suffix+"_cheops_plots."+savetype),transparent=transparent)
 
     def init_phot_plot_sects(self,src):
         diffs=np.diff(self.lcs[src].loc[self.lcs[src]['mask'],'time'])
@@ -2767,87 +2733,44 @@ class chexo_model():
             nsect+=1
         return sectinfo
 
-    def init_phot_plot(self,src):
+    def init_phot_plot(self, src, overwrite=False, **kwargs):
         #Initialising photometric plot info - i.e. flux and planet models from either 
         #We want per-sector arrays which match time[mask]
+        
+        if not hasattr(self,"models_out") or not (src in self.models_out) or (hasattr(self,'trace') and src+"_allplmodel_+1sig" not in self.models_out[src].columns) or overwrite:
+            #Either no saved timeseries at all, or no specific timeseries for this source, or we now have a trace but the saved timeseries have not been updated (no +/-1 sigma regions)
+            self.make_lcs_timeseries(src)
+
         if not hasattr(self,"phot_plot_info"):
             self.phot_plot_info={}
-        self.phot_plot_info[src]={}
-        self.phot_plot_info[src]['sectinfo'] = self.init_phot_plot_sects(src)
-        self.phot_plot_info[src]['fluxmod'] = {}
-        self.phot_plot_info[src]['fitfluxmod'] = {}
-        self.phot_plot_info[src]['plmod'] = {}
+        if src not in self.phot_plot_info or overwrite:
+            self.phot_plot_info[src]={}
+            self.phot_plot_info[src]['sectinfo'] = self.init_phot_plot_sects(src)
         for ns in self.phot_plot_info[src]['sectinfo']:
-            #Index for self.lcs[src] within "sector" and masked
-            self.phot_plot_info[src]['sectinfo'][ns]['ix'] = (self.lcs[src]['time'].values>=self.phot_plot_info[src]['sectinfo'][ns]['start'])&(self.lcs[src]['time']<=self.phot_plot_info[src]['sectinfo'][ns]['end'])&self.lcs[src]['mask']
-            #Index for self.lc_fit[src] within "sector" and masked
-            self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'] = (self.lc_fit[src]['time'].values>=self.phot_plot_info[src]['sectinfo'][ns]['start'])&(self.lc_fit[src]['time']<=self.phot_plot_info[src]['sectinfo'][ns]['end'])
-            if self.fit_gp:
-                if self.bin_oot:
-                    from scipy.interpolate import interp1d
-                    if hasattr(self,'trace'):
-                        self.phot_plot_info[src]['fluxmod'][ns]=[]
-                        for p in self.percentiles:
-                            interpp=interp1d(np.hstack((self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'].values[0]-0.1,self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'],'time'],self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'].values[-1]+0.1)),
-                                             np.hstack((0,np.percentile(self.trace['photgp_model_x'][:,self.phot_plot_info[src]['sectinfo'][ns]['fit_ix']],self.percentiles[p],axis=0),0)))
-                            self.phot_plot_info[src]['fluxmod'][ns]+=[interpp(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'].values)]
-                    else:
-                            interpp=interp1d(np.hstack((self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'].values[0]-0.1,self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'],'time'],self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'].values[-1]+0.1)),
-                                             np.hstack((0,self.init_soln['photgp_model_x'][self.phot_plot_info[src]['sectinfo'][ns]['fit_ix']],0)))
-                            self.phot_plot_info[src]['fluxmod'][ns]=[None,None,interpp(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'].values),None,None]
-                else:
-                    if hasattr(self,'trace'):
-                        self.phot_plot_info[src]['fluxmod'][ns] = np.nanpercentile(self.trace['photgp_model_x'][:,self.phot_plot_info[src]['sectinfo'][ns]['fit_ix']], list(self.percentiles.values()), axis=0)
-                    else:
-                        self.phot_plot_info[src]['fluxmod'][ns] = [None,None,self.init_soln['photgp_model_x'][self.phot_plot_info[src]['sectinfo'][ns]['fit_ix']],None,None]
-            elif not self.fit_gp:
-                #Plotting kepler spline
-                self.phot_plot_info[src]['fluxmod'][ns]=[None, None, self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'spline'].values, None, None]
-                #self.phot_plot_info[src]['fitfluxmod'][ns]=[None,None,self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'],'spline'].values,None,None]
+            self.phot_plot_info[src]['sectinfo'][ns]['ix'] = (self.models_out[src]['time'].values>=self.phot_plot_info[src]['sectinfo'][ns]['start'])&(self.models_out[src]['time']<=self.phot_plot_info[src]['sectinfo'][ns]['end'])
+        
+        self.phot_plot_info[src]['transmin']=np.min(np.hstack([self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'].values for ns in self.phot_plot_info[src]['sectinfo']]))
+        self.phot_plot_info[src]['stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values) for ns in self.phot_plot_info[src]['sectinfo']])
+        self.phot_plot_info[src]['flat_stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values - \
+                                                                       (self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'].values + \
+                                                                        self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_med'].values)) for ns in self.phot_plot_info[src]['sectinfo']]
+                                                            )
 
-            
-            if hasattr(self,'trace'):
-                self.phot_plot_info[src]['plmod'][ns] = np.zeros((5,np.sum(self.phot_plot_info[src]['sectinfo'][ns]['ix'])))
-                for n_p, p in enumerate(self.percentiles):
-                    self.phot_plot_info[src]['plmod'][ns][n_p,self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans']]=np.nanpercentile(self.trace[src+'_summodel_x'][:,(self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'])*(self.lc_fit[src]['near_trans'])], self.percentiles[p], axis=0)
-            else:
-                self.phot_plot_info[src]['plmod'][ns]=[None, None, np.zeros(np.sum(self.phot_plot_info[src]['sectinfo'][ns]['ix'])), None, None]
-                # print(np.sum(self.phot_plot_info[src]['sectinfo'][ns]['ix']),
-                #       len(self.phot_plot_info[src]['plmod'][ns][2]),
-                #       np.sum(self.phot_plot_info[src]['sectinfo'][ns]['ix']),
-                #       len(self.phot_plot_info[src]['sectinfo'][ns]['ix']),
-                #       np.sum(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans']),
-                #       len(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans']),
-                #       np.sum(self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'], 'near_trans']),
-                #       len(self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'], 'near_trans']))
-                # print(len(self.init_soln[src+'_summodel_x']),
-                #       len(self.lc_fit[src]),
-                #       len(self.phot_plot_info[src]['sectinfo'][ns]['fit_ix']),
-                #       np.sum(self.phot_plot_info[src]['sectinfo'][ns]['fit_ix']))
-                #self.lc_fit[scope]['time'].values
-                # print(len(self.init_soln[src+'_summodel_x'][self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'], 'near_trans']]))
-                # print(len(self.phot_plot_info[src]['plmod'][ns][2][self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans']]))
-                # print(self.init_soln[src+'_summodel_x'][self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'], 'near_trans']])
-                # print(self.phot_plot_info[src]['plmod'][ns][2][self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans']] )
-                # self.phot_plot_info[src]['plmod'][ns][2] = 16361
-                # self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans'] = 6288/16361
-                # self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'], 'near_trans'] = 6288/7017
-                self.phot_plot_info[src]['plmod'][ns][2][self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'near_trans']] = self.init_soln[src+'_summodel_x'][(self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'])*(self.lc_fit[src]['near_trans'])]
-        print(src, {ns:self.phot_plot_info[src]['plmod'][ns][2].shape for ns in self.phot_plot_info[src]['plmod']})
-        print(src, {ns:self.phot_plot_info[src]['fluxmod'][ns][2].shape for ns in self.phot_plot_info[src]['plmod']})
-        if hasattr(self,'trace'):
-            self.phot_plot_info[src]['transmin']=np.min([np.min(self.phot_plot_info[src]['plmod'][ns][0]) for ns in self.phot_plot_info[src]['plmod']])
-        else:
-            self.phot_plot_info[src]['transmin']=np.nanmin([np.nanmin(self.phot_plot_info[src]['plmod'][ns][2]) for ns in self.phot_plot_info[src]['plmod']])
-        self.phot_plot_info[src]['stdev']=np.nanmedian([np.nanstd(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux']) for ns in self.phot_plot_info[src]['plmod']])
-        self.phot_plot_info[src]['flat_stdev']=np.nanmedian([np.nanstd(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'] - self.phot_plot_info[src]['plmod'][ns][2] - self.phot_plot_info[src]['fluxmod'][ns][2]) for ns in self.phot_plot_info[src]['plmod']])
-
-    def plot_phot(self, src='tess', save=True, savetype='png', plot_flat=False, plot_both=False):     
+    def plot_phot(self, src='tess', save=True, savetype='png', plot_flat=False, plot_both=False,**kwargs):
+        """
+        Make plot of photometric observations. 
+        
+        Args:
+            src (str, optional): Which lightcurve source to plot (i.e. telescope). Defaults to 'tess'.
+            save (bool, optional): Whether to save the plot. Defaults to True.
+            savetype (str, optional): Which format to save the plot. Defaults to 'png'.
+            plot_flat (bool, optional): Plot only flat/detrended timeseries (Defaults to False)
+            plot_both (bool, optional): Plot both flat and detrended timeseries (Defaults to False)
+        """
         sns.set_palette("Paired")   
-        #Finding sector gaps
-        #print(likely_sects+1,nsect,sectinfo)
-
-        self.init_phot_plot(src)
+        
+        #Finding sector gaps and sector information
+        self.init_phot_plot(src,**kwargs)
 
         plt.figure(figsize=(11,9))
         for ns in self.phot_plot_info[src]['sectinfo']:
@@ -2857,25 +2780,39 @@ class chexo_model():
                 else:
                     plt.subplot(len(self.phot_plot_info[src]['sectinfo']),1,ns)
                 #Plotting flux
-                plt.plot(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'],'.k',markersize=1.0,alpha=0.4,zorder=1)
-                binsect=bin_lc_segment(np.column_stack((self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                                                        self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'],
-                                                        self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux_err'])),1/48)
+                plt.plot(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                         self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'],
+                         '.k',markersize=1.0,alpha=0.4,zorder=1)
+                binsect=bin_lc_segment(np.column_stack((self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                                        self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'],
+                                                        self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux_err'])),1/48)
                 plt.errorbar(binsect[:,0],binsect[:,1],yerr=binsect[:,2],fmt='.',color="C1",ecolor="C0",alpha=0.6,zorder=2)
-                if hasattr(self,'trace'):
+                if src+'_gpmodel_+1sig' in self.models_out[src]: #_allplmodel_med,_gpmodel_med
                     #flux model regions
-                    plt.fill_between(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],self.phot_plot_info[src]['fluxmod'][ns][0],self.phot_plot_info[src]['fluxmod'][ns][4],color='C4',alpha=0.15,zorder=3)
-                    plt.fill_between(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],self.phot_plot_info[src]['fluxmod'][ns][1],self.phot_plot_info[src]['fluxmod'][ns][3],color='C4',alpha=0.15,zorder=4)
+                    plt.fill_between(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_-2sig'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_+2sig'],
+                                     color='C4',alpha=0.15,zorder=3)
+                    plt.fill_between(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_-1sig'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_+1sig'],
+                                     color='C4',alpha=0.15,zorder=4)
+                if src+'_allplmodel_+1sig' in self.models_out[src]: #_allplmodel_med,_gpmodel_med
                     #planet + flux model regions
-                    plt.fill_between(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                                    self.phot_plot_info[src]['fluxmod'][ns][0]+self.phot_plot_info[src]['plmod'][ns][0],
-                                    self.phot_plot_info[src]['fluxmod'][ns][4]+self.phot_plot_info[src]['plmod'][ns][4],color='C2',alpha=0.15,zorder=6)
-                    plt.fill_between(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                                    self.phot_plot_info[src]['fluxmod'][ns][1]+self.phot_plot_info[src]['plmod'][ns][1],
-                                    self.phot_plot_info[src]['fluxmod'][ns][4]+self.phot_plot_info[src]['plmod'][ns][3],color='C2',alpha=0.15,zorder=7)
-                plt.plot(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],self.phot_plot_info[src]['fluxmod'][ns][2],linewidth=2,color='C5',alpha=0.75,zorder=5)
-                plt.plot(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                        self.phot_plot_info[src]['fluxmod'][ns][2]+self.phot_plot_info[src]['plmod'][ns][2],linewidth=2,color='C3',alpha=0.75,zorder=8)
+                    plt.fill_between(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_-2sig'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_+2sig'],
+                                     color='C2',alpha=0.15,zorder=6)
+                    plt.fill_between(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_-1sig'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_+1sig'],
+                                     color='C2',alpha=0.15,zorder=7)
+                plt.plot(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                         self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_med'],
+                         linewidth=2,color='C5',alpha=0.75,zorder=5)
+                plt.plot(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                         self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_med']+self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'],
+                         linewidth=2,color='C3',alpha=0.75,zorder=8)
 
             if plot_flat:
                 if plot_both:
@@ -2883,21 +2820,26 @@ class chexo_model():
                 else:
                     plt.subplot(len(self.phot_plot_info[src]['sectinfo']),1,ns)
                 #Plotting flux (minus variability model)
-                plt.plot(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux']-self.phot_plot_info[src]['fluxmod'][ns][2],
+                plt.plot(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                         self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux']-self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_med'],
                          '.k',markersize=1.0,alpha=0.4,zorder=1)
-                binsect=bin_lc_segment(np.column_stack((self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                                                        self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux']-self.phot_plot_info[src]['fluxmod'][ns][2],
-                                                        self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux_err'])),1/48)
+                binsect=bin_lc_segment(np.column_stack((self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                                        self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux']-self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_gpmodel_med'],
+                                                        self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux_err'])),1/48)
                 plt.errorbar(binsect[:,0],binsect[:,1],yerr=binsect[:,2],fmt='.',color="C1",ecolor="C0",alpha=0.6,zorder=2)
-                if hasattr(self,'trace'):
-                    plt.fill_between(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                                    self.phot_plot_info[src]['plmod'][ns][0],
-                                    self.phot_plot_info[src]['plmod'][ns][4],color='C2',alpha=0.15,zorder=6)
-                    plt.fill_between(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                                    self.phot_plot_info[src]['plmod'][ns][1],
-                                    self.phot_plot_info[src]['plmod'][ns][3],color='C2',alpha=0.15,zorder=7)
-                plt.plot(self.lcs[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
-                         self.phot_plot_info[src]['plmod'][ns][2],linewidth=2,color='C3',alpha=0.75,zorder=8)
+                if src+'_allplmodel_+1sig' in self.models_out[src]: #_allplmodel_med,_gpmodel_med
+                    #planet + flux model regions
+                    plt.fill_between(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_-2sig'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_+2sig'],
+                                     color='C2',alpha=0.15,zorder=6)
+                    plt.fill_between(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_-1sig'],
+                                     self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_+1sig'],
+                                     color='C2',alpha=0.15,zorder=7)
+                plt.plot(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'time'],
+                         self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'],
+                         linewidth=2,color='C3',alpha=0.75,zorder=8)
             
             plt.xlim(self.phot_plot_info[src]['sectinfo'][ns]['start']-1,self.phot_plot_info[src]['sectinfo'][ns]['end']+1)
             plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%d'))
@@ -3159,110 +3101,105 @@ class chexo_model():
             plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+"_ttvs."+savetype))
 
     def plot_transits_fold(self,save=True,savetype='png',xlim=None,show_legend=True,sigma_fill=2):
+
+        if not hasattr(self,"models_out"):
+            self.make_timeseries()
+
         import seaborn as sns
         sns.set_palette("Paired")
         plt.figure(figsize=(5,3+2*len(self.planets)**0.66))
         if xlim is None:
-            xlim=(-1*(2.5-len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),
-                  (2.5-len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]))
+            xlim=(-1*2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),
+                  2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]))
         for npl,pl in enumerate(self.planets):
             plt.subplot(len(self.planets),1,1+npl)
             yoffset=0
             t0 = self.init_soln['t0_'+pl] if not hasattr(self,'trace') else np.nanmedian(self.trace['t0_'+pl])
             p = self.init_soln['P_'+pl] if not hasattr(self,'trace') else np.nanmedian(self.trace['P_'+pl])
+            nscope=0
             for scope in self.lc_fit:
                 if not self.fit_ttvs or self.planets[pl]['n_trans']<=2:
-                    phase = (self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
+                    phase = (self.models_out[scope]['time'].values-t0-0.5*p)%p-0.5*p
+                    
+                    #(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
                 else:
                     #subtract nearest fitted transit time for each time value
                     trans_times= np.array([self.init_soln['transit_times_'+pl+'_'+str(n)] for n in range(self.planets[pl]['n_trans'])]) if not hasattr(self,'trace') else np.array([np.nanmedian(self.trace['transit_times_'+pl+'_'+str(n)], axis=0) for n in range(self.planets[pl]['n_trans'])])
-                    nearest_times=np.argmin(abs(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time'][:,None]-trans_times[None,:]),axis=1)
-                    phase = self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time'] - trans_times[nearest_times]
+                    nearest_times=np.argmin(abs(self.models_out[scope]['time'].values[:,None]-trans_times[None,:]),axis=1)
+                    phase = self.models_out[scope]['time'].values - trans_times[nearest_times]
                     #(self.lc_fit[src].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
+                ix = abs(phase)<(3*self.planets[pl]['tdur'])
+                phase=phase[ix]
                 n_pts=np.sum((phase<xlim[1])&(phase>xlim[0]))
                 raw_alpha=np.clip(6*(n_pts)**(-0.4),0.02,0.99)
                 #pl2mask=[list(info.keys())[n2] in range(3) if n2!=n]
-                if self.fit_gp and len(self.cheops_filekeys)>0:
-                    #Plotting GP
-                    if hasattr(self,'trace'):
-                        #Using MCMC
-                        fluxmod = np.nanmedian(self.trace[scope+'_gp_model_x'][:,self.lc_fit[scope]['near_trans']], axis=0)
-                    else:
-                        #Using initial soln
-                        fluxmod = self.init_soln[scope+'_gp_model_x'][self.lc_fit[scope]['near_trans']]
-                        #plt.plot(self.lc_fit[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['fit_ix'],'time'],fluxmod,linewidth=2,color='C5',alpha=0.75,zorder=5)
-
-                    #elif not self.fit_gp and self.fit_flat:
-                    #Plotting kepler spline
-                    #fluxmod=self.lc_fit[src].loc[self.lc_fit[scope]['near_trans'],'spline'].values
-                    #plt.plot(self.lcs[src].loc[sect_ix,'time'], fluxmod, linewidth=2,color='C5',alpha=0.75)
-                else:
-                    #Even in the case of self.fit_flat, we have already removed the spline in the lc_fit['time'] array
-                    fluxmod = np.zeros(np.sum(self.lc_fit[scope]['near_trans']))
-                if len(self.cheops_filekeys)>0:
-                    allchmod=np.hstack([self.chmod[fk][2] for fk in self.cheops_filekeys])
 
                 #Need to also remove the influence of other planets here:
-                if len(self.planets)>1:
-                    for npl2,pl2 in enumerate(self.planets):
-                        if pl2!=pl:
-                            if hasattr(self,'trace'):
-                                fluxmod+=np.nanmedian(self.trace[scope+'_model_x_'+pl2][:,self.lc_fit[scope]['near_trans']])
-                                if len(self.cheops_filekeys)>0:
-                                    allchmod+=np.hstack([np.nanmedian(self.trace['cheops_planets_x_'+pl2][:,self.cheops_fk_mask[fk]],axis=0) for fk in self.cheops_filekeys])
-                            else:
-                                fluxmod+=np.nanmedian(self.init_soln[scope+'_model_x_'+pl2][self.lc_fit[scope]['near_trans']])
-                                if len(self.cheops_filekeys)>0:
-                                    allchmod+=np.hstack([self.init_soln['cheops_planets_x_'+pl2][self.cheops_fk_mask[fk]] for fk in self.cheops_filekeys])
-
-                if hasattr(self,'trace'):
-                    pl_mod = np.nanpercentile(self.trace[scope+'_model_x_'+pl][:,self.lc_fit[scope]['near_trans']], list(self.percentiles.values()), axis=0)
-                    
-                else:
-                    pl_mod = [None,None,self.init_soln[scope+'_model_x_'+pl][self.lc_fit[scope]['near_trans']],None,None]
-                transmin =np.min(pl_mod[2])
-
-                plt.plot(phase, yoffset+self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'flux']-fluxmod,'.',c='C0',alpha=raw_alpha,markersize=3,zorder=1)
-                binsrclc=bin_lc_segment(np.column_stack((np.sort(phase), (self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'flux'].values-fluxmod)[np.argsort(phase)],
-                                                            self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'flux_err'].values[np.argsort(phase)])),self.planets[pl]['tdur']/8)
-                plt.errorbar(binsrclc[:,0],yoffset+binsrclc[:,1],yerr=binsrclc[:,2],fmt='.',markersize=8,alpha=0.8,ecolor='#ccc',zorder=2,color='C1',label=scope)
-                if hasattr(self,'trace') and int(sigma_fill)>0:
+                transmin =np.min(self.models_out[scope].loc[ix,scope+'_'+pl+'model_med'])
+                plflux=self.models_out[scope].loc[ix,'flux'].values-self.models_out[scope].loc[ix,scope+"_gpmodel_med"].values-self.models_out[scope].loc[ix,scope+"_allplmodel_med"].values+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values
+                plt.plot(phase, yoffset+plflux,'.',c='C'+str(nscope*2),alpha=raw_alpha,markersize=3,zorder=1)
+                binsrclc=bin_lc_segment(np.column_stack((np.sort(phase), plflux[np.argsort(phase)],
+                                                         self.models_out[scope].loc[ix,'flux_err'].values[np.argsort(phase)])),self.planets[pl]['tdur']/8)
+                plt.errorbar(binsrclc[:,0],yoffset+binsrclc[:,1],yerr=binsrclc[:,2],fmt='.',markersize=8,alpha=0.8,ecolor='#ccc',zorder=2,color='C'+str(1+nscope*2),label=scope)
+                if scope+"_"+pl+"model_+1sig" in self.models_out[scope] and sigma_fill>0:
                     if int(sigma_fill)>=2:
-                        plt.fill_between(np.sort(phase), yoffset+pl_mod[0][np.argsort(phase)], yoffset+pl_mod[4][np.argsort(phase)],
-                                            alpha=0.15,zorder=3,color='C'+str(4+2*npl))
-                    plt.fill_between(np.sort(phase), yoffset+pl_mod[1][np.argsort(phase)], yoffset+pl_mod[3][np.argsort(phase)],
-                                        alpha=0.15,zorder=4,color='C'+str(4+2*npl))
-                plt.plot(np.sort(phase), yoffset+pl_mod[2][np.argsort(phase)],':',
+                        plt.fill_between(np.sort(phase), 
+                                         yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_-2sig"].values[np.argsort(phase)],
+                                         yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_+2sig"].values[np.argsort(phase)],
+                                         alpha=0.15,zorder=3,color='C'+str(4+2*npl))
+                    plt.fill_between(np.sort(phase), 
+                                     yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_-1sig"].values[np.argsort(phase)],
+                                     yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_+1sig"].values[np.argsort(phase)],
+                                     alpha=0.15,zorder=4,color='C'+str(4+2*npl))
+                plt.plot(np.sort(phase),yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values[np.argsort(phase)],':',
                             alpha=0.66,zorder=5,color='C'+str(5+2*npl),linewidth=2.5)
-                std=np.nanstd(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'flux']-fluxmod-pl_mod[2])
-                yoffset+=1.5*std
+                std=np.nanmedian(abs(np.diff(plflux-self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"])))
+                yoffset+= transmin + 3*std
+                nscope+=1
             
             if len(self.cheops_filekeys)>0:
                 yoffset+=abs(transmin)
-                chphase = (np.hstack([self.cheops_lc.loc[self.cheops_fk_mask[fk],'time'].values for fk in self.cheops_filekeys])-t0-0.5*p)%p-0.5*p
-                ch_n_pts=np.sum((phase<xlim[1])&(phase>xlim[0]))
+                if not self.fit_ttvs or self.planets[pl]['n_trans']<=2:
+                    chphase = (self.models_out['cheops']['time'].values-t0-0.5*p)%p-0.5*p
+                    #(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
+                else:
+                    #subtract nearest fitted transit time for each time value
+                    trans_times= np.array([self.init_soln['transit_times_'+pl+'_'+str(n)] for n in range(self.planets[pl]['n_trans'])]) if not hasattr(self,'trace') else np.array([np.nanmedian(self.trace['transit_times_'+pl+'_'+str(n)], axis=0) for n in range(self.planets[pl]['n_trans'])])
+                    nearest_times=np.argmin(abs(self.models_out['cheops']['time'].values[:,None]-trans_times[None,:]),axis=1)
+                    chphase = self.models_out['cheops']['time'].values - trans_times[nearest_times]
+                    #(self.lc_fit[src].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
+                chix = abs(chphase)<(3*self.planets[pl]['tdur'])
+                chphase=chphase[chix]
+                ch_n_pts=np.sum((chphase<xlim[1])&(chphase>xlim[0]))
                 ch_raw_alpha=np.clip(9*(ch_n_pts)**(-0.4),0.02,0.99)
                 #print("alphas=",raw_alpha,ch_raw_alpha)
-                cheopsally = np.hstack([self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux'].values for fk in self.cheops_filekeys])
-                plt.plot(chphase, yoffset+cheopsally-allchmod,'.k',markersize=5,c='C2',alpha=ch_raw_alpha,zorder=5)
-                binchelc=bin_lc_segment(np.column_stack((np.sort(chphase), (cheopsally-allchmod)[np.argsort(chphase)],
-                                                            np.hstack([self.cheops_lc.loc[self.cheops_fk_mask[fk],'flux_err'] for fk in self.cheops_filekeys]))),
+                cheopsally = self.models_out['cheops'].loc[chix,'flux'].values-self.models_out['cheops'].loc[chix,'che_alldetrend_med'].values-self.models_out['cheops'].loc[chix,'che_allplmodel_med'].values+self.models_out['cheops'].loc[chix,'che_'+pl+'model_med'].values
+                plt.plot(chphase, yoffset+cheopsally,'.k',markersize=5,c='C'+str(nscope*2),alpha=ch_raw_alpha,zorder=5)
+                binchelc=bin_lc_segment(np.column_stack((np.sort(chphase), cheopsally[np.argsort(chphase)],
+                                                            self.models_out['cheops'].loc[chix,'flux_err'])),
                                         self.planets[pl]['tdur']/8)
-                plt.errorbar(binchelc[:,0],yoffset+binchelc[:,1],yerr=binchelc[:,2],fmt='.',markersize=8,alpha=0.8,ecolor='#ccc',zorder=2,color='C3',label="CHEOPS")
+                plt.errorbar(binchelc[:,0],yoffset+binchelc[:,1],yerr=binchelc[:,2],fmt='.',markersize=8,alpha=0.8,ecolor='#ccc',zorder=6,color='C'+str(1+nscope*2),label="CHEOPS")
                 
-                chgapphase = (np.hstack([np.hstack((self.cheops_lc.loc[self.cheops_lc['filekey']==fk,'time'],self.cheops_gap_timeseries[self.cheops_gap_fks==fk])) for fk in self.cheops_filekeys])-t0-0.5*p)%p-0.5*p
-                print(chgapphase.shape,np.hstack([self.chplmod[fk][pl][2] for fk in self.cheops_filekeys]).shape)
-                plt.plot(np.sort(chgapphase), yoffset+np.hstack([self.chplmod[fk][pl][2] for fk in self.cheops_filekeys])[np.argsort(chgapphase)],
-                        '--',zorder=8,alpha=0.6,color='C'+str(5+2*npl),linewidth=2.5)
-                if hasattr(self,'trace') and sigma_fill>0:
+                chgapphase = (np.hstack([self.models_out['cheops']['time'],self.models_out['cheops_gap_models_out']['time']])-t0-0.5*p)%p-0.5*p
+                chgapix    = abs(chgapphase)<(3*self.planets[pl]['tdur'])
+                if "che_"+pl+"model_+1sig" in self.models_out[scope] and sigma_fill>0:
                     if int(sigma_fill)>=2:
-                        plt.fill_between(np.sort(chgapphase), yoffset+np.hstack([self.chplmod[fk][pl][0] for fk in self.cheops_filekeys])[np.argsort(chgapphase)],
-                                            yoffset+np.hstack([self.chplmod[fk][pl][4] for fk in self.cheops_filekeys])[np.argsort(chgapphase)],zorder=6,alpha=0.15,color='C'+str(4+2*npl))
-                    plt.fill_between(np.sort(chgapphase), yoffset+np.hstack([self.chplmod[fk][pl][1] for fk in self.cheops_filekeys])[np.argsort(chgapphase)],
-                                        yoffset+np.hstack([self.chplmod[fk][pl][3] for fk in self.cheops_filekeys])[np.argsort(chgapphase)],zorder=7,alpha=0.15,color='C'+str(4+2*npl))                    
+                        modflux2sig=[np.hstack([self.models_out['cheops']['che_'+pl+'model_-2sig'],self.models_out['cheops_gap_models_out']['che_'+pl+'model_-2sig']]),
+                                     np.hstack([self.models_out['cheops']['che_'+pl+'model_+2sig'],self.models_out['cheops_gap_models_out']['che_'+pl+'model_+2sig']])]
+                        plt.fill_between(np.sort(chgapphase[chgapix]), yoffset+modflux2sig[0][chgapix][np.argsort(chgapphase[chgapix])],
+                                         yoffset+modflux2sig[1][chgapix][np.argsort(chgapphase[chgapix])],
+                                         zorder=6,alpha=0.15,color='C'+str(4+2*npl))
+                    modflux1sig=[np.hstack([self.models_out['cheops']['che_'+pl+'model_-1sig'],self.models_out['cheops_gap_models_out']['che_'+pl+'model_-1sig']]),
+                                 np.hstack([self.models_out['cheops']['che_'+pl+'model_+1sig'],self.models_out['cheops_gap_models_out']['che_'+pl+'model_+1sig']])]
+                    plt.fill_between(np.sort(chgapphase[chgapix]), yoffset+modflux1sig[0][chgapix][np.argsort(chgapphase[chgapix])],
+                                         yoffset+modflux1sig[1][chgapix][np.argsort(chgapphase[chgapix])],
+                                     zorder=7,alpha=0.15,color='C'+str(4+2*npl))
+                modflux=np.hstack([self.models_out['cheops']['che_'+pl+'model_med'],self.models_out['cheops_gap_models_out']['che_'+pl+'model_med']])
+                plt.plot(np.sort(chgapphase[chgapix]), yoffset+modflux[chgapix][np.argsort(chgapphase[chgapix])],
+                        '--',zorder=8,alpha=0.6,color='C'+str(5+2*npl),linewidth=2.5)
                 
-                yoffset+=3*np.nanmedian(abs(np.diff(allchmod)))
-                
+                yoffset+=5*np.nanmedian(abs(np.diff(self.models_out['cheops']['flux']-self.models_out['cheops']['che_alldetrend_med']-self.models_out['cheops']['che_allplmodel_med'])))
+            
             plt.ylabel("Flux [ppt]")
             #print(npl,len(self.planets))
             if npl==len(self.planets)-1:
@@ -3579,7 +3516,7 @@ class chexo_model():
             descr+="models offset above, with a best-fit line as well as 1- \& 2-$\\sigma$ regions. Lower panel shows the detrended {{\it CHEOPS}} photometry as well as the best-fit line as well as 1- \& 2-$\\sigma$ regions of a combined {\\it TESS} and {\\it CHEOPS} transit model."
             descr+="}\n\label{fig:CheopsOther}\n\end{figure}\n\n"
             descr+=""
-    
+
 """
 @INPROCEEDINGS{Buchschacher2015,
        author = {{Buchschacher}, N. and {S{\'e}gransan}, D. and {Udry}, S. and {D{\'\i}az}, R.},
