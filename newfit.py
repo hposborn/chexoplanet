@@ -77,8 +77,8 @@ class chexo_model():
                        'fit_ttvs':False,        # Fit a TTVorbit exoplanet model which searches for TTVs
                        'split_periods':None,    # Fit for multiple split periods. Input must be None or a dict matching mod.planets with grouped indexes for those transits to group
                        'ttv_prior':'Normal',    # What prior to have for individual transit times. Possibilities: "Normal","Uniform","BoundNormal"
-                       'fit_phi_gp':True,       # fit_phi_gp - bool - co-fit a GP to the roll angle.
-                       'fit_phi_spline':False,  # fit_phi_spline - bool - co-fit a spline model to the roll angle
+                       'fit_phi_gp':False,      # fit_phi_gp - bool - co-fit a GP to the roll angle.
+                       'fit_phi_spline':True,   # fit_phi_spline - bool - co-fit a spline model to the roll angle
                        'spline_bkpt_cad':9.,    # spline_bkpt_cad - float - The spline breakpoint cadence in degrees. Default is 9deg
                        'spline_order':3.,       # spline_order - int - Thespline order. Defaults to 3 (cubic)
                        'common_phi_model':True, # common_phi_model - bool - Fit the same roll angle GP trend common across all visits
@@ -1029,7 +1029,7 @@ class chexo_model():
         Optional Args:
             use_signif (bool, optional):     Determine the detrending factors to use by simply selecting those with significant non-zero coefficients. Defaults to False
             use_bayes_fact (bool, optional): Determine the detrending factors to use with a Bayes Factor (Default is True)
-            signif_thresh (float, optional): #hreshold for detrending parameters in sigma (default: 1.25)
+            signif_thresh (float, optional): #Threshold for detrending parameters in sigma (default: 1.25)
             force_detrend_pars (dict, optional): Which parameters to force into the model regardless of bayes_fact/signif (dict in form {'lin':[], 'quad':[]})
         """
         
