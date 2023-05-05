@@ -268,6 +268,7 @@ class chexo_model():
         mag=10.5 if mag is None else mag
 
         out_dir=os.path.join(self.save_file_loc,self.name)
+        config.set
         pipe_refdataloc=config.get_conf_paths()[1]
         
         # folds = glob.glob(os.path.join(out_dir,fk,"Outdata","000??"))
@@ -2524,8 +2525,8 @@ class chexo_model():
             savefile=os.path.join(self.save_file_loc,self.name,self.unq_name+'_model.pkl')
         
         #First saving GP predictions/etc using save_timeseries:
-        self.save_timeseries(savefile.replace('.pkl','_timeseries.csv'))
-        #Loading from pickled dictionary
+        self.save_timeseries()
+        #Loading from pickle dictionary
         if limit_size and hasattr(self,'trace'):
             #We cannot afford to store full arrays of GP predictions and transit models
 
@@ -3118,16 +3119,16 @@ class chexo_model():
             p = self.init_soln['P_'+pl] if not hasattr(self,'trace') else np.nanmedian(self.trace['P_'+pl])
             nscope=0
             for scope in self.lc_fit:
-                if not self.fit_ttvs or self.planets[pl]['n_trans']<=2:
-                    phase = (self.models_out[scope]['time'].values-t0-0.5*p)%p-0.5*p
-                    
-                    #(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
-                else:
+                if self.fit_ttvs and self.planets[pl]['n_trans']>2:
                     #subtract nearest fitted transit time for each time value
                     trans_times= np.array([self.init_soln['transit_times_'+pl+'_'+str(n)] for n in range(self.planets[pl]['n_trans'])]) if not hasattr(self,'trace') else np.array([np.nanmedian(self.trace['transit_times_'+pl+'_'+str(n)], axis=0) for n in range(self.planets[pl]['n_trans'])])
                     nearest_times=np.argmin(abs(self.models_out[scope]['time'].values[:,None]-trans_times[None,:]),axis=1)
                     phase = self.models_out[scope]['time'].values - trans_times[nearest_times]
                     #(self.lc_fit[src].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
+                else:
+                    phase = (self.models_out[scope]['time'].values-t0-0.5*p)%p-0.5*p
+                    #(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
+
                 ix = abs(phase)<(3*self.planets[pl]['tdur'])
                 phase=phase[ix]
                 n_pts=np.sum((phase<xlim[1])&(phase>xlim[0]))
