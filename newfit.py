@@ -268,7 +268,6 @@ class chexo_model():
         mag=10.5 if mag is None else mag
 
         out_dir=os.path.join(self.save_file_loc,self.name)
-        config.set
         pipe_refdataloc=config.get_conf_paths()[1]
         
         # folds = glob.glob(os.path.join(out_dir,fk,"Outdata","000??"))
