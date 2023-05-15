@@ -241,10 +241,11 @@ class chexo_model():
         self.unq_name=self.name+"_"+date.today().strftime("%Y%m%d")+"_"+str(int(boolstr, 2))+"_"+"_".join(nonboolstrs)+comm
 
 
-    def add_lc(self, time, flux, flux_err, source='tess'):
+    def add_lc(self, time, flux, flux_err, mask=None, source='tess'):
         if not hasattr(self,'lcs'):
             self.lcs={}
         self.lcs[source]=pd.DataFrame({'time':time,'flux':flux,'flux_err':flux_err})
+        self.lcs[source]['mask']=np.tile(True,len(time)) if mask is None else mask
 
     def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,**kwargs):
         """
@@ -2071,7 +2072,7 @@ class chexo_model():
                                                 np.hstack((0,np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0),0)))
                             #print(np.min(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values),np.max(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values),self.lcs[src].loc[self.lcs[src]['mask'],'time'].values[0],self.lcs[src].loc[self.lcs[src]['mask'],'time'].values[-1])
                             self.models_out[src][src+"_gpmodel_"+p]=interpp(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values)
-                    else:
+                    elif hasattr(self,'init_soln'):
                         interpp=interp1d(np.hstack((np.min(self.lcs[src].iloc[0]['time'])-0.5,self.lc_fit[src]['time'].values,np.max(self.lcs[src].iloc[-1]['time'])+0.5)),
                                             np.hstack((0,self.init_soln[src+'_gp_model_x'],0)))
                         self.models_out[src][src+"_gpmodel_med"]=interpp(self.lcs[src].loc[self.lcs[src]['mask'],'time'].values)
@@ -2079,14 +2080,14 @@ class chexo_model():
                     if hasattr(self,'trace'):
                         for p in self.percentiles:
                             self.models_out[src][src+"_gpmodel_"+p]=np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0)
-                    else:
+                    elif hasattr(self,'init_soln'):
                         self.models_out[src][src+"_gpmodel_med"]=self.init_soln[src+'_gp_model_x']
                 elif self.cut_oot:
                     if hasattr(self,'trace'):
                         for p in self.percentiles:
                             self.models_out[src][src+"_gpmodel_"+p] = np.tile(np.nan,len(self.models_out[src]['time']))
                             self.models_out[src][src+"_gpmodel_"+p][self.lcs[src]['near_trans']&self.lcs[src]['mask']] = np.percentile(self.trace[src+'_gp_model_x'],self.percentiles[p],axis=0)
-                    else:
+                    elif hasattr(self,'init_soln'):
                         p="med"
                         self.models_out[src][src+"_gpmodel_"+p] = np.tile(np.nan,len(self.models_out[src]['time']))
                         self.models_out[src][src+"_gpmodel_"+p][self.lcs[src]['near_trans']&self.lcs[src]['mask']] = self.init_soln[src+'_gp_model_x']
@@ -2101,7 +2102,7 @@ class chexo_model():
                     self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+"_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace[src+'_model_x_'+pl][:,self.lc_fit[src]['near_trans']] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
                     #self.models_out[src][src+"_allmodel_"+p]=self.models_out[src][src+"_gpmodel_"+p] if src+"_gpmodel_"+p in self.models_out[src] else self.models_out[src][src+"_gpmodel_med"]
                     #self.models_out[src][src+"_allmodel_"+p]+=self.models_out[src][src+"_allplmodel_"+p].values
-            else:
+            elif hasattr(self,'init_soln'):
                 p="med"
                 for pl in self.planets:
                     self.models_out[src][src+'_'+pl+"model_"+p]=np.zeros(np.sum(self.lcs[src]['mask']))
@@ -2135,7 +2136,7 @@ class chexo_model():
                 if hasattr(self,'trace'):
                     for p in self.percentiles:
                         self.models_out['cheops']['che_pred_gp_'+p]=np.hstack([np.nanpercentile(self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
-                else:
+                elif hasattr(self,'init_soln'):
                     self.models_out['cheops']['che_pred_gp_med']=np.hstack([self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
 
             elif self.fit_phi_spline:
@@ -2143,11 +2144,12 @@ class chexo_model():
                     for p in self.percentiles:
                         self.models_out['cheops']['che_pred_spline_'+p]=np.hstack([np.nanpercentile(self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
                         #fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['spline_model_phi_'+str(fk)][:,self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],axis=0)
-                else:
+                elif hasattr(self,'init_soln'):
                     self.models_out['cheops']['che_pred_spline_med']=np.hstack([self.init_soln['spline_model_phi_'+str(fk)][self.cheops_lc.loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
-
-            self.models_out['cheops_gap_models_out']['time']=self.cheops_gap_timeseries
-            self.models_out['cheops_gap_models_out']['filekey']=self.cheops_gap_fks
+            if hasattr(self,'cheops_gap_timeseries'):
+                self.models_out['cheops_gap_models_out']['time']=self.cheops_gap_timeseries
+            if hasattr(self,'cheops_gap_fks'):
+                self.models_out['cheops_gap_models_out']['filekey']=self.cheops_gap_fks
             if hasattr(self,'trace'):
                 for p in self.percentiles:
                     self.models_out['cheops']['che_lindetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
@@ -2170,7 +2172,7 @@ class chexo_model():
                     else:
                         self.models_out['cheops']["che_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace['cheops_planets_x_'+pl][:,self.cheops_lc['mask']] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
                     self.models_out['cheops_gap_models_out']["che_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace['cheops_planets_gaps_'+pl] for pl in self.planets]),axis=2),self.percentiles[p],axis=0)
-            else:
+            elif hasattr(self,'init_soln'):
                 p="med"
                 self.models_out['cheops']['che_lindetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk] for fk in self.cheops_filekeys])
                 if self.fit_phi_gp:
@@ -2197,30 +2199,30 @@ class chexo_model():
             #self.models_out[tracename+'_gap_models_out']=pd.DataFrame()
             for col in ['time','flux','flux_err','filekey']:
                 if col in self.cheops_lc.columns:
-                    self.models_out[tracename][col]=self.cheops_lc.loc[self.cheops_fk_mask[fk],col]
+                    self.models_out[tracename][col]=np.hstack([self.cheops_lc.loc[self.cheops_fk_mask[fk],col] for fk in self.cheops_filekeys])
             if type(init_trace)==pm.backends.base.MultiTrace:
                 for p in self.percentiles:
-                    self.models_out[tracename]['che_lindetrend_'+p]=np.nanpercentile(init_trace['cheops_flux_cor_'+fk],self.percentiles[p],axis=0)
+                    self.models_out[tracename]['che_lindetrend_'+p]=np.hstack([np.nanpercentile(init_trace['cheops_flux_cor_'+fk],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
                     self.models_out[tracename]['che_alldetrend_'+p]=self.models_out[tracename]['che_lindetrend_'+p].values[:]
                     self.models_out[tracename]["che_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
                     for npl,pl in enumerate(self.planets):
                         if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
-                            self.models_out[tracename]['che_'+pl+"model_"+p]=np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0)
+                            self.models_out[tracename]['che_'+pl+"model_"+p]=np.hstack([np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
                         else:
                             self.models_out[tracename]['che_'+pl+"model_"+p]=np.zeros(len(self.models_out[tracename]['time']))
                         self.models_out[tracename]["che_allplmodel_"+p]+=self.models_out[tracename]['che_'+pl+"model_"+p]
             elif type(init_trace)==dict:
                 p="med"
-                self.models_out[tracename]['che_lindetrend_'+p]=init_trace['cheops_flux_cor_'+fk]
+                self.models_out[tracename]['che_lindetrend_'+p]=np.hstack([init_trace['cheops_flux_cor_'+fk] for fk in self.cheops_filekeys])
                 self.models_out[tracename]['che_alldetrend_'+p]=self.models_out[tracename]['che_lindetrend_'+p].values[:]
                 self.models_out[tracename]["che_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
                 for npl,pl in enumerate(self.planets):
                     if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
-                        self.models_out[tracename]['che_'+pl+"model_"+p]=np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0)
+                        self.models_out[tracename]['che_'+pl+"model_"+p]=np.hstack([np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
                     else:
                         self.models_out[tracename]['che_'+pl+"model_"+p]=np.zeros(len(self.models_out[tracename]['time']))
                     self.models_out[tracename]["che_allplmodel_"+p]+=self.models_out[tracename]['che_'+pl+"model_"+p]
-            self.models_out[tracename+'_gap_models_out']=self.models_out[tracename] #Setting these to be identical
+            #self.models_out[tracename+'_gap_models_out']=self.models_out[tracename] #Setting these to be identical
    #cheops_planets_x
 
     def make_rv_timeseries(self):
@@ -3100,7 +3102,7 @@ class chexo_model():
         if save:
             plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+"_ttvs."+savetype))
 
-    def plot_transits_fold(self,save=True,savetype='png',xlim=None,show_legend=True,sigma_fill=2):
+    def plot_transits_fold(self,save=True,savetype='png',xlim=None,show_legend=True,sigma_fill=2,yoffsets=None):
 
         if not hasattr(self,"models_out"):
             self.make_timeseries()
@@ -3154,11 +3156,17 @@ class chexo_model():
                 plt.plot(np.sort(phase),yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values[np.argsort(phase)],':',
                             alpha=0.66,zorder=5,color='C'+str(5+2*npl),linewidth=2.5)
                 std=np.nanmedian(abs(np.diff(plflux-self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"])))
-                yoffset+= transmin + 3*std
+                if yoffsets is None:
+                    yoffset+= transmin + 3*std
+                else:
+                    yoffset+= yoffsets
                 nscope+=1
             
             if len(self.cheops_filekeys)>0:
-                yoffset+=abs(transmin)
+                if yoffsets is None:
+                    yoffset+=abs(transmin)
+                else:
+                    yoffset+= yoffsets
                 if not self.fit_ttvs or self.planets[pl]['n_trans']<=2:
                     chphase = (self.models_out['cheops']['time'].values-t0-0.5*p)%p-0.5*p
                     #(self.lc_fit[scope].loc[self.lc_fit[scope]['near_trans'],'time']-t0-0.5*p)%p-0.5*p
