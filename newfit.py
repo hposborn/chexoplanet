@@ -148,14 +148,14 @@ class chexo_model():
         """Automatically download CHEOPS data using Dace
         """
         try:
-            from dace.cheops import Cheops
+            from dace_query.cheops import Cheops
         except:
             raise ImportError("Cannot import Dace. Check it is installed, or initialise the class with `get_cheops=False` and add a lightcurve with `mod.add_cheops_lc`")
         catname= self.name if catname is None else catname
         try:
             these_cheops_obs=pd.DataFrame(Cheops.query_database(filters={"obj_id_catname":{"contains":catname},"file_key":{"contains":"_V020"}}))
             if len(these_cheops_obs)==0:
-                from dace.cheops import Cheops
+                from dace_query.cheops import Cheops
                 raise ValueError("No objects returned for name="+catname)
             elif hasattr(self,'radec'):
                 obs_radecs=SkyCoord([rd.split(" / ")[0] for rd in these_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
@@ -377,7 +377,7 @@ class chexo_model():
         out_dir=os.path.join(self.save_file_loc,self.name)
         
         if fileloc is None and download:
-            from dace.cheops import Cheops
+            from dace_query.cheops import Cheops
             n_attempts=0
             while not os.path.isdir(os.path.join(out_dir,filekey)) and n_attempts<5:
                 try:
@@ -455,7 +455,7 @@ class chexo_model():
         bgthresh=np.percentile(iche['bg'].values,95)*1.5
         iche['mask']=(~np.isnan(iche['flux']))&(~np.isnan(iche['flux_err']))&cut_anom_diff(iche['flux'].values)&(iche['bg']<bgthresh)&(iche['flux']>ylims[0])&(iche['flux']<ylims[-1])
         iche.loc[iche['mask'],'mask']&=cut_anom_diff(iche['flux'].values[iche['mask']])
-
+        
         iche['mask_phi_sorting']=np.tile(-1,len(iche['mask']))
         iche['mask_time_sorting']=np.tile(-1,len(iche['mask']))
         iche.loc[iche['mask'],'mask_phi_sorting']=np.argsort(iche.loc[iche['mask'],'phi'].values).astype(int)
@@ -2048,7 +2048,7 @@ class chexo_model():
         latex_tab+="\\end{tabular}\n\\caption{List of CHEOPS observations.}\\ref{tab:cheops_dat}\n\\end{table}"
         return latex_tab
 
-    def make_lcs_timeseries(self, src, overwrite=False):
+    def make_lcs_timeseries(self, src, overwrite=False, **kwargs):
         """
         Pandas dataframe with:
          - tess_gpmodel_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - either fitted GP or pre-detrtended spline model
@@ -2111,7 +2111,7 @@ class chexo_model():
                 #self.models_out[src].loc[self.lcs[src].loc[self.lcs[src]['mask'],'near_trans'],src+"_allplmodel_"+p]=np.sum(np.vstack([self.init_soln[src+'_model_x_'+pl][self.lc_fit[src]['near_trans']] for pl in self.planets]),axis=1)
                 #self.models_out[src][src+"_allmodel_"+p]=self.models_out[src][src+"_gpmodel_"+p]+self.models_out[src][src+"_allplmodel_"+p]
 
-    def make_cheops_timeseries(self, tracename=None, init_trace=None, fk=None, overwrite=False):
+    def make_cheops_timeseries(self, tracename=None, init_trace=None, fk=None, overwrite=False, **kwargs):
         """
         Pandas dataframe (self.models_out['cheops']) with:
          - che_gpmodel_[p] (where p is +2sig, +1sig, med, -1sig, -2sig) - Fitted roll angle GP model in time axis
@@ -2423,24 +2423,25 @@ class chexo_model():
         with open(os.path.join(self.save_file_loc,self.name,self.unq_name+"_trace_modeltable.tex"),'w') as f:
             f.write('\n'.join(table))
 
-    def make_timeseries(self, overwrite=False):
+    def make_timeseries(self, overwrite=False, **kwargs):
         #assert hasattr(self,'trace'), "Must have run an MCMC"
         
         if not hasattr(self,'models_out'):
             self.models_out={}
         for src in self.lcs:
             if src not in self.models_out or overwrite:
-                self.make_lcs_timeseries(src)
+                self.make_lcs_timeseries(src,**kwargs)
         if len(self.cheops_filekeys)>0 and ('cheops' not in self.models_out or overwrite):
-            self.make_cheops_timeseries()
+            self.make_cheops_timeseries(**kwargs)
         
         if hasattr(self,'rvs') and ('rvs' not in self.models_out or overwrite):
-            self.make_rv_timeseries()
+            self.make_rv_timeseries(**kwargs)
 
     def save_timeseries(self,**kwargs):
         self.make_timeseries(**kwargs)
         for mod in self.models_out:
-            self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name,self.unq_name+"_"+mod+"_timeseries.csv"))
+            if mod is not None:
+                self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name,self.unq_name+"_"+mod+"_timeseries.csv"))
     
     def check_rollangle_gp(self, make_change=True, **kwargs):
         """Checking now that the model is initialised whether the rollangle GP improves the loglik or not.
@@ -2551,10 +2552,10 @@ class chexo_model():
         del bytes_out
         #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
 
-    def plot_rollangle_model(self,save=True,savetype='png'):
+    def plot_rollangle_model(self,save=True,savetype='png',**kwargs):
         
         if not hasattr(self,"models_out") or "cheops" not in self.models_out or (hasattr(self,'trace') and "che_lindetrend_+1sig" not in self.models_out["cheops"]):
-            self.make_cheops_timeseries()
+            self.make_cheops_timeseries(**kwargs)
 
         modname="gp" if self.fit_phi_gp else "spline"
         assert "che_pred_"+modname+"_med" in self.models_out["cheops"], "Must have "+modname+" in saved timeseries."
@@ -2606,11 +2607,11 @@ class chexo_model():
             assert fk!="all", "to plot only loose or no transit models, need to only plot individual filekeys (i.e. set \'fk=PR...\')"
             save_suffix+="_"+np.array([f for f in ['fixtrans','loosetrans','notrans'] if f in tracename])[0]
             if tracename not in self.models_out:
-                self.make_cheops_timeseries(tracename = tracename, fk=fk, init_trace=self.cheops_init_trace[tracename])
+                self.make_cheops_timeseries(tracename = tracename, fk=fk, init_trace=self.cheops_init_trace[tracename], **kwargs)
         else:
             tracename="cheops"
             if not hasattr(self,'models_out') or "cheops" not in self.models_out:
-                self.make_cheops_timeseries()
+                self.make_cheops_timeseries(**kwargs)
         
 
         if fk=='all':
@@ -2714,7 +2715,7 @@ class chexo_model():
         if save:
             plt.savefig(os.path.join(self.save_file_loc,self.name,self.unq_name+save_suffix+"_cheops_plots."+savetype),transparent=transparent)
 
-    def init_phot_plot_sects(self,src):
+    def init_phot_plot_sects(self,src,**kwargs):
         diffs=np.diff(self.lcs[src].loc[self.lcs[src]['mask'],'time'])
         jumps=diffs>0.66
         total_obs_time = np.sum(diffs[diffs<0.25])
@@ -2741,7 +2742,7 @@ class chexo_model():
         
         if not hasattr(self,"models_out") or not (src in self.models_out) or (hasattr(self,'trace') and src+"_allplmodel_+1sig" not in self.models_out[src].columns) or overwrite:
             #Either no saved timeseries at all, or no specific timeseries for this source, or we now have a trace but the saved timeseries have not been updated (no +/-1 sigma regions)
-            self.make_lcs_timeseries(src)
+            self.make_lcs_timeseries(src,**kwargs)
 
         if not hasattr(self,"phot_plot_info"):
             self.phot_plot_info={}
