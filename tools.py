@@ -59,6 +59,46 @@ def cut_anom_diff(flux,thresh=4.2):
                      abs(flux[-1]-np.median(flux[-3:-1]))<(np.median(abs(diffarr[0,:]))*thresh*5)))
     return anoms
 
+def get_field_times():
+    
+    from astropy.time import Time
+    yr_now=int(np.ceil(Time.now().jyear-2017.25))
+    if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","all_campaign_data_yr"+str(yr_now)+".csv")):
+        from datetime import datetime
+
+        kep_times=pd.read_table(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables",'k1_qs.txt'),delimiter="\t")
+        all_fields=pd.DataFrame({'field':kep_times['Q'].values,
+                                'field_string':np.array(['Q'+str(q) for q in kep_times['Q'].values]),
+                                'mission':np.tile("kepler",len(kep_times)),
+                                'jd_start':np.array([Time(datetime.strptime(s, '%Y %b %d')).jd for s in kep_times['Start']]),
+                                'jd_end':np.array([Time(datetime.strptime(s, '%Y %b %d')).jd for s in kep_times['Stop']]),
+                                })
+        
+        k2_times=pd.read_table(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables",'k2_camps.txt'),delimiter="\t")
+        k2_times['mission']=np.tile("k2",len(k2_times))
+        k2_times['jd_start']=np.array([Time(datetime.strptime(s, '%Y %b %d')).jd for s in k2_times['Observation Start Date']])
+        k2_times['jd_end']=np.array([Time(datetime.strptime(s, '%Y %b %d')).jd for s in k2_times['Observation Stop Date']])
+        k2_times['field_string']=k2_times['Campaign']
+        k2_times['field']=np.array([float(s[1:].replace('a','.1').replace('b','.2')) for s in k2_times['Campaign']])
+        
+        all_fields=all_fields.append(k2_times.loc[:,['field','field_string','mission','jd_start','jd_end']])
+
+        
+        for yr in np.arange(1,yr_now):
+            sect_times=pd.read_html("https://tess.mit.edu/tess-year-"+str(yr)+"-observations/")[0]
+            sect_times['mission']=np.tile("tess",len(sect_times))
+            sect_times['jd_start']=np.array([Time(datetime.strptime(s.split('-')[0], '%m/%d/%y')).jd for s in sect_times['Dates']])
+            sect_times['jd_end']=np.array([Time(datetime.strptime(s.split('-')[1], '%m/%d/%y')).jd for s in sect_times['Dates']])
+            sect_times['field']=sect_times['Sector']
+            sect_times['field_string']=np.array(["S"+str(f) for f in sect_times['Sector']])
+            all_fields=all_fields.append(sect_times.loc[:,['field','field_string','mission','jd_start','jd_end']])
+
+        all_fields=all_fields.set_index(np.arange(len(all_fields)))
+        all_fields.to_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","all_campaign_data_yr"+str(yr_now)+".csv"))
+        return all_fields
+    else:
+        return pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","all_campaign_data_yr"+str(yr_now)+".csv"),index_col=0)
+
 def weighted_avg_and_std(values, errs, masknans=True, axis=None):
     """
     Return the weighted average and standard deviation.
@@ -348,7 +388,56 @@ def ExoFopUpload(username=None,password=None,saveloc='.'):
     password=input("Input password") if password is None else password
     os.system("wget --keep-session-cookies --save-cookies "+saveloc+"/mycookie.txt --post-data \"username="+username+"&password="+password+"&ref=login_user&ref_page=/tess/\" \"https://exofop.ipac.caltech.edu/tess/password_check.php\"")
 
-def roll_rollangles(roll_angles):
+def cut_high_rollangle_scatter(mask,roll_angles,flux,flux_err,sd_thresh=3.0,roll_ang_binsize=25):
+    """Find regions which have high scatter as a function of rollangle.
+    Do this iteratively by comparing in-bin scatter to out-of-bin scatter, masking points each time"""
+    newmask=np.tile(True,len(mask))
+    #Using 30-deg bins
+    max_sigma_off=sd_thresh+10
+    n_loop=0
+    while max_sigma_off>sd_thresh and n_loop<10:
+        sorted_roll_angles=np.sort(roll_angles[newmask&mask])
+        sorted_flux=flux[newmask&mask][np.argsort(roll_angles[newmask&mask])]
+        sorted_flux_err=flux_err[newmask&mask][np.argsort(roll_angles[newmask&mask])]
+        rolllc=np.column_stack((sorted_roll_angles,sorted_flux,sorted_flux_err))
+        av_1s,sd_1s,av_2s,sd_2s,av_3s,sd_3s=[],[],[],[],[],[]
+        range1=np.arange(np.min(sorted_roll_angles)-5/6*roll_ang_binsize,np.max(sorted_roll_angles)+1.01/6*roll_ang_binsize,roll_ang_binsize)
+        bins1=binlc_given_x(rolllc,range1)
+        for n in range(len(bins1)):
+            ix=np.arange(len(bins1))!=n
+            av,sd=weighted_avg_and_std(bins1[ix,1], bins1[ix,2])
+            av_1s+=[av];sd_1s+=[sd]
+        snr1s=(bins1[:,2]-np.array(sd_1s))/np.nanmedian(bins1[:,2])
+        range2=np.arange(np.min(sorted_roll_angles)-3/6*roll_ang_binsize,np.max(sorted_roll_angles)+3.01/6*roll_ang_binsize,roll_ang_binsize)
+        bins2=binlc_given_x(rolllc,range2)
+        for n in range(len(bins2)):
+            ix=np.arange(len(bins2))!=n
+            av,sd=weighted_avg_and_std(bins2[ix,1], bins2[ix,2])
+            av_2s+=[av];sd_2s+=[sd]
+        snr2s=(bins2[:,2]-np.array(sd_2s))/np.nanmedian(bins2[:,2])
+        range3=np.arange(np.min(sorted_roll_angles)-1/6*roll_ang_binsize,np.max(sorted_roll_angles)+5.01/6*roll_ang_binsize,roll_ang_binsize)
+        bins3=binlc_given_x(rolllc,range3)
+        for n in range(len(bins3)):
+            ix=np.arange(len(bins3))!=n
+            av,sd=weighted_avg_and_std(bins3[ix,1], bins3[ix,2])
+            av_3s+=[av];sd_3s+=[sd]
+        snr3s=(bins3[:,2]-np.array(sd_3s))/np.nanmedian(bins3[:,2])
+        maxes=[np.nanmax(snr1s), np.nanmax(snr2s), np.nanmax(snr3s)]
+        max_sigma_off=np.max(maxes)
+        #Masking all points within the range
+        if np.argmax(maxes)==0:
+            ix=list(snr1s).index(max_sigma_off)
+            newmask[(roll_angles>range1[ix])&(roll_angles<range1[ix+1])]=False
+        elif np.argmax(maxes)==1:
+            ix=list(snr2s).index(max_sigma_off)
+            newmask[(roll_angles>range2[ix])&(roll_angles<range2[ix+1])]=False
+        else:
+            ix=list(snr3s).index(max_sigma_off)
+            newmask[(roll_angles>range3[ix])&(roll_angles<range3[ix+1])]=False
+        n_loop+=1
+    return newmask
+
+def roll_rollangles(roll_angles,mask=None):
     """Shifting the roll angles in such a way that the largest jump in the data does not occur during the time series of sorted rollangles.
     For example, continuous roll angles with a jump from 150-210 degrees would have the subsequent values "rolled" to the start to be continous from -160 to 150.
     This assists with e.g. roll angle plotting
@@ -359,9 +448,11 @@ def roll_rollangles(roll_angles):
     Returns:
         rolled_roll_angles: [description]
     """
+    mask=np.tile(True,len(roll_angles)) if mask is None else mask
+
     sorted_roll_angles=np.sort(roll_angles)
-    if np.max(np.diff(sorted_roll_angles))>10:
-        phi_jump=0.5*(sorted_roll_angles[np.argmax(np.diff(sorted_roll_angles))+1]+sorted_roll_angles[np.argmax(np.diff(sorted_roll_angles))])
+    if np.max(np.diff(sorted_roll_angles[mask]))>10:
+        phi_jump=0.5*(sorted_roll_angles[mask][np.argmax(np.diff(sorted_roll_angles[mask]))+1]+sorted_roll_angles[mask][np.argmax(np.diff(sorted_roll_angles[mask]))])
         phi_jump+=np.random.normal(0,1e-5) #Doing this in case median rolls these onto zero offsets which messes up stuff in the future
         #print(np.max(np.diff(sorted_roll_angles)),sorted_roll_angles[np.argmax(np.diff(sorted_roll_angles))],sorted_roll_angles[np.argmax(np.diff(sorted_roll_angles))+1])
     else:
