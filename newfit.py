@@ -304,8 +304,8 @@ class chexo_model():
             pps.fit_bgstars = False
             pps.datapath=os.path.join(out_dir,fk)
 
-            if hasattr(self,'Teff') and self.Teff is not None:
-                pps.Teff = self.Teff
+            #if hasattr(self,'Teff') and self.Teff is not None:
+            #    pps.Teff = int(np.round(self.Teff)
             #pps.limflux = 1e-5
             pps.darksub = True
             #pps.dark_level = 2
@@ -417,8 +417,8 @@ class chexo_model():
                         #Deleting it
                         print("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
                         os.system("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz') #Deleting .tar file
-                        print("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'/*.mp4')
-                        os.system("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'/*.mp4') #Deleting videos
+                        print("rm "+out_dir+'/'+filekey+'/*.mp4')
+                        os.system("rm "+out_dir+'/'+filekey+'/*.mp4') #Deleting videos
                 except:
                     time.sleep(15)
                 print("new dir exists?",os.path.isdir(os.path.join(out_dir,filekey)))
