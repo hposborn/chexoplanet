@@ -468,7 +468,8 @@ class chexo_model():
                     dv_rot = np.degrees(np.arcsin(np.sin(moon_coo.ra.radian-self.radec.ra.radian)*np.cos(moon_coo.dec.radian)/np.sin(v_moon)))
                     iche['cheops_moon_angle']=(iche[s].values[:]-dv_rot)%360
                 iche[s+"_orig"]=iche[s].values[:]
-                iche[s]=roll_rollangles(iche[s].values)
+                iche['mask']=cut_high_rollangle_scatter(iche[s].values)
+                iche[s]=roll_rollangles(iche[s].values,mask=iche['mask'])
         iche['xoff']=iche['centroidx']-np.nanmedian(iche['centroidx'])
         iche['yoff']=iche['centroidy']-np.nanmedian(iche['centroidy'])
         iche['phi_sorting']=np.argsort(iche['phi'].values)
@@ -629,8 +630,6 @@ class chexo_model():
                             depth=float(row[1]['Depth (ppm)'])/1e6,
                             period=float(row[1]['Period (days)']),
                             period_err=float(row[1]['Period (days) err']))
-        if add_starpars:
-            row.iloc[0]['Stellar Eff Temp (K)'], row.iloc[0]['Stellar Eff Temp (K) err']
     def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None,
                    period_err=None, b=None, rprs=None, K=None, overwrite=False):
         """Add planet to the model
