@@ -438,15 +438,16 @@ class chexo_model():
         if PIPE:
             binchar=str(int(PIPE_bin_src)) if PIPE_bin_src is not None else ''
             sources={'time':'BJD_TIME', 'flux':'FLUX'+binchar, 'flux_err':'FLUXERR'+binchar, 
-                     'phi':'ROLL', 'bg':'BG', 'centroidx':'XC'+binchar,
+                     'bg':'BG', 'centroidx':'XC'+binchar,'phi':'ROLL', 
                      'centroidy':'YC'+binchar, 'deltaT':'thermFront_2','smear':None}
         elif DRP:
             sources={'time':'BJD_TIME', 'flux':'FLUX', 'flux_err':'FLUXERR', 
-                     'phi':'ROLL_ANGLE', 'bg':'BACKGROUND', 'centroidx':'CENTROID_X', 
-                     'centroidy':'CENTROID_Y', 'deltaT':None, 'smear':'SMEARING_LC'}
+                     'bg':'BACKGROUND', 'centroidx':'CENTROID_X', 
+                     'centroidy':'CENTROID_Y', 'deltaT':None, 'smear':'SMEARING_LC','phi':'ROLL_ANGLE', }
         f=fits.open(fileloc)
         iche=pd.DataFrame()
         for s in sources:
+            #print(s,iche.columns)
             if sources[s] is not None:
                 if s=='flux_err' and sources[s] not in f[1].data:
                     iche[s]=np.sqrt(f[1].data[sources['flux']])
@@ -458,6 +459,8 @@ class chexo_model():
             if s=='flux_err':
                 iche['raw_flux_err']=iche[s].values
                 iche[s]=(iche[s].values/np.nanmedian(f[1].data[sources['flux']]))*1000
+            if s=='bg':
+                bgthresh=np.percentile(iche['bg'].values,95)*1.5
             if s=='phi':
                 if hasattr(self,'radec') and self.radec is not None:
                     moon_coo = get_body('moon', Time(iche['time'],format='jd',scale='tdb'))
@@ -468,7 +471,9 @@ class chexo_model():
                     dv_rot = np.degrees(np.arcsin(np.sin(moon_coo.ra.radian-self.radec.ra.radian)*np.cos(moon_coo.dec.radian)/np.sin(v_moon)))
                     iche['cheops_moon_angle']=(iche[s].values[:]-dv_rot)%360
                 iche[s+"_orig"]=iche[s].values[:]
-                iche['mask']=cut_high_rollangle_scatter(iche[s].values)
+                #Performing simple anomaly masking using background limit, nans, and flux outliers:
+                iche['mask']=(~np.isnan(iche['flux']))&(~np.isnan(iche['flux_err']))&cut_anom_diff(iche['flux'].values)&(iche['bg']<bgthresh)&(iche['flux']>ylims[0])&(iche['flux']<ylims[-1])
+                iche['mask']=cut_high_rollangle_scatter(iche['mask'].values,iche[s].values,iche['flux'].values,iche['raw_flux_err'].values,**kwargs)
                 iche[s]=roll_rollangles(iche[s].values,mask=iche['mask'])
         iche['xoff']=iche['centroidx']-np.nanmedian(iche['centroidx'])
         iche['yoff']=iche['centroidy']-np.nanmedian(iche['centroidy'])
@@ -479,9 +484,8 @@ class chexo_model():
 
         iche['filekey']=np.tile(filekey,len(f[1].data[sources['time']]))
         
-        #Performing simple anomaly masking using background limit, nans, and flux outliers:
-        bgthresh=np.percentile(iche['bg'].values,95)*1.5
-        iche['mask']=(~np.isnan(iche['flux']))&(~np.isnan(iche['flux_err']))&cut_anom_diff(iche['flux'].values)&(iche['bg']<bgthresh)&(iche['flux']>ylims[0])&(iche['flux']<ylims[-1])
+        
+        
         iche.loc[iche['mask'],'mask']&=cut_anom_diff(iche['flux'].values[iche['mask']])
         
         iche['mask_phi_sorting']=np.tile(-1,len(iche['mask']))
@@ -630,6 +634,7 @@ class chexo_model():
                             depth=float(row[1]['Depth (ppm)'])/1e6,
                             period=float(row[1]['Period (days)']),
                             period_err=float(row[1]['Period (days) err']))
+            
     def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None,
                    period_err=None, b=None, rprs=None, K=None, overwrite=False):
         """Add planet to the model
