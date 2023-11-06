@@ -388,7 +388,7 @@ def ExoFopUpload(username=None,password=None,saveloc='.'):
     password=input("Input password") if password is None else password
     os.system("wget --keep-session-cookies --save-cookies "+saveloc+"/mycookie.txt --post-data \"username="+username+"&password="+password+"&ref=login_user&ref_page=/tess/\" \"https://exofop.ipac.caltech.edu/tess/password_check.php\"")
 
-def cut_high_rollangle_scatter(mask,roll_angles,flux,flux_err,sd_thresh=3.0,roll_ang_binsize=25):
+def cut_high_rollangle_scatter(mask,roll_angles,flux,flux_err,sd_thresh=3.0,roll_ang_binsize=25, **kwargs):
     """Find regions which have high scatter as a function of rollangle.
     Do this iteratively by comparing in-bin scatter to out-of-bin scatter, masking points each time"""
     newmask=np.tile(True,len(mask))
@@ -457,8 +457,32 @@ def roll_rollangles(roll_angles,mask=None):
         #print(np.max(np.diff(sorted_roll_angles)),sorted_roll_angles[np.argmax(np.diff(sorted_roll_angles))],sorted_roll_angles[np.argmax(np.diff(sorted_roll_angles))+1])
     else:
         phi_jump=0
-    print(phi_jump)
     return (roll_angles-phi_jump)%360+phi_jump
+
+def roll_all_rollangles(roll_angles, mask=None):
+    """Shifting the roll angles across a number of fluxkeys in such a way that the largest jump in the data does not occur during the time series of sorted rollangles.
+    For example, continuous roll angles with a jump from 150-210 degrees would have the subsequent values "rolled" to the start to be continous from -160 to 150.
+    This assists with e.g. roll angle plotting
+
+    Args:
+        roll_angles (np.ndarray): Array of Cheops roll angles
+
+    Returns:
+        rolled_roll_angles: [description]
+    """
+    mask=np.tile(True,len(roll_angles)) if mask is None else mask
+
+    digis=np.digitize(roll_angles[mask]%360,np.arange(0,360.01,5))
+    digi_counts=[digis[d]==d for d in range(72)]
+    min_counts=np.argmin(digi_counts)
+    if np.sum((roll_angles[mask]>(5*min_counts))&(roll_angles[mask]<(5*(min_counts+1))))>0:
+        rem_rollangs=np.sort(roll_angles[mask][(roll_angles[mask]>(5*min_counts))&(roll_angles[mask]<(5*(min_counts+1)))])
+        jump_loc=np.argmax(np.diff(rem_rollangs))
+        new_phi_jump=0.5*(rem_rollangs[jump_loc]+rem_rollangs[jump_loc+1])
+    else:
+        new_phi_jump=5*min_counts+2.5
+    return (roll_angles-new_phi_jump)%360+new_phi_jump
+
 
 def vals_to_latex(vals):
     #Function to turn -1,0, and +1 sigma values into round latex strings for a table
