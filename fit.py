@@ -81,8 +81,8 @@ class chexo_model():
                        'ecc_prior':'auto',      # ecc_prior - string - 'uniform', 'kipping' or 'vaneylen'. If 'auto' we decide based on multiplicity
                        'npoly_rv':2,            # npoly_rv - int - order of polynomial fit to RVs
                        'rv_mass_prior':'logK',  # rv_mass_prior - str - What mass prior to use. "logK" = normal prior on log amplitude of K, "popMp" = population-derived prior on logMp, "K" simple normal prior on K.
-                       'use_mstar':True,        # use_mstar - bool - Whether to model using the stellar Mass (otherwise set use_logg)
-                       'use_logg':False,        # use_logg - bool - Whether to model using the stellar logg (otherwise Mass)
+                       'spar_param':'mstar',    # spar_param - str - Which stellar parameter to use (other than radius) in the fit. Options: mstar/logg/rhostar. Default is stellar mass (mstar)
+                       'spar_prior':'const',    # spar_prior - str - Which prior distribution to use the stellar parameters. Options: const/loose/logloose. Default is a constrained normal distribution (const)
                        'constrain_lds':True,    # constrain_lds - bool - Use constrained LDs from model or unconstrained?
                        'ld_mult':3.,            # ld_mult - float - How much to multiply theoretical LD param uncertainties
                        'fit_contam':False}      # fit_contam - bool - Fit for "second light" (i.e. a binary or planet+blend)
@@ -117,13 +117,13 @@ class chexo_model():
         if not os.path.exists(os.path.join(self.save_file_loc,self.name)):
             os.mkdir(os.path.join(self.save_file_loc,self.name))
         bools=['debug','load_from_file','fit_gp','fit_flat','train_gp','cut_oot','bin_oot','pred_all','use_bayes_fact','use_signif',
-               'use_multinest','use_pymc3','assume_circ','fit_ttvs','fit_phi_gp','fit_phi_spline','common_phi_model','use_mstar','use_logg',
+               'use_multinest','use_pymc3','assume_circ','fit_ttvs','fit_phi_gp','fit_phi_spline','common_phi_model',
                'constrain_lds','fit_contam']
         boolstr=''
         for i in bools:
             boolstr+=str(int(getattr(self,i)))
             
-        nonbools=['flat_knotdist','cut_distance','mask_distance','bin_size','signif_thresh','ecc_prior','npoly_rv','ld_mult','timing_sd_durs','rv_mass_prior','spline_order','spline_bkpt_cad']
+        nonbools=['flat_knotdist','cut_distance','mask_distance','bin_size','signif_thresh','ecc_prior','npoly_rv','ld_mult','timing_sd_durs','rv_mass_prior','spline_order','spline_bkpt_cad','spar_param','spar_prior',]
         nonboolstrs=[]
         for i in nonbools:
             nonboolstrs+=[str(getattr(self,i)) if len(str(getattr(self,i)))<5 else str(getattr(self,i))[:5]]
@@ -380,8 +380,8 @@ class chexo_model():
             Mstar (float or list, optional): Stellar mass in Msol either as a float or in format [value, neg_err, pos_err]. Defaults to None.
             
         Optional kwargs:
-            use_mstar (boolean, optional): Whether to model using the stellar Mass (otherwise set use_logg). Defaults to True
-            use_logg (boolean, optional): Whether to model using the stellar logg (otherwise Mass). Defaults to False
+            spar_param (str, optional): Which stellar parameter to use (other than radius) in the fit. Options: mstar/logg/rhostar. Default is stellar mass (mstar)
+            spar_prior (str, optional): Which prior distribution to use the stellar parameters. Options: const/loose/logloose. Default is a constrained normal distribution (const)
 
         """
         self.update(**kwargs)
@@ -1083,7 +1083,6 @@ class chexo_model():
 
         assert not self.use_multinest, "Multinest is not currently possible"
         assert not (self.fit_flat&self.fit_gp), "Cannot both flatten data and fit GP. Choose one"
-        assert self.use_mstar^self.use_logg, "Must be either use_mstar or use_logg, not both/neither"
         assert not (self.fit_phi_spline&self.fit_phi_gp), "Cannot both fit spline and GP to phi model. Choose one"
 
         if self.fit_ttvs:
@@ -1113,13 +1112,43 @@ class chexo_model():
             # -------------------------------------------
             self.model_params['Teff'] = pm.Bound(pm.Normal, lower=0)("Teff",mu=self.Teff[0], sd=self.Teff[1])
             self.model_params['Rs'] = pm.Bound(pm.Normal, lower=0)("Rs",mu=self.Rstar[0], sd=self.Rstar[1])
-            if self.use_mstar:
-                self.model_params['Ms'] = pm.Bound(pm.Normal, lower=0)("Ms",mu=self.Mstar[0], sd=self.Mstar[1]) #Ms and logg are interchangeably deterministic
+            spar_modelled_param=[]
+            if self.spar_param=="mstar":
+                if self.spar_param=='const':
+                    self.model_params['Ms'] = pm.Bound(pm.Normal, lower=0)("mstar", mu=self.Mstar[0], sd=self.Mstar[1])
+                    spar_modelled_param+=[self.model_params['Ms']]
+                elif self.spar_param=='loose':
+                    self.model_params['Ms'] = pm.Bound(pm.Normal, lower=0)("mstar", mu=self.Mstar[0], sd=0.5*self.Mstar[0])
+                    spar_modelled_param+=[self.model_params['Ms']]
+                elif self.spar_param=='logloose':
+                    self.model_params['logmstar'] = pm.Normal("logmstar", mu=np.log(self.Mstar[0]), sd=1)
+                    self.model_params['Ms'] = pm.Deterministic("Ms", tt.exp(self.model_params['logmstar']))
+                    spar_modelled_param+=[self.model_params['logmstar']]
                 self.model_params['logg'] = pm.Deterministic("logg",tt.log10(self.model_params['Ms']/self.model_params['Rs']**2)+4.41) #Ms and logg are interchangeably deterministic
-            elif self.use_logg:
-                self.model_params['logg'] = pm.Normal("logg",mu=self.logg[0],sd=self.logg[1]) #Ms and logg are interchangeably deterministic
+                self.model_params['rhostar'] = pm.Deterministic("rhostar", self.model_params['Ms']/self.model_params['Rs']**3)
+            elif self.spar_param=="logg":
+                assert not self.spar_param=='logloose', "logg should not be modelled with a log loose parameter" 
+                spar_modelled_param+=[self.model_params['logg']]
+                if self.spar_param=='const':
+                    self.model_params['logg'] = pm.Normal("logg",mu=self.logg[0],sd=self.logg[1]) #Ms and logg are interchangeably deterministic
+                elif self.spar_param=='loose':
+                    self.model_params['logg'] = pm.Normal("logg",mu=self.logg[0],sd=1)
                 self.model_params['Ms'] = pm.Deterministic("Ms",tt.power(10,self.model_params['logg']-4.41)*self.model_params['Rs']**2) #Ms and logg are interchangeably deterministic
-            
+                self.model_params['rhostar'] = pm.Deterministic("rhostar", self.model_params['Ms']/self.model_params['Rs']**3)
+            elif self.spar_param=="rhostar":
+                if self.spar_param=='const':
+                    self.model_params['rhostar'] = pm.Bound(pm.Normal, lower=0)("rhostar", mu=self.rhostar[0], sd=self.rhostar[1])
+                    spar_modelled_param+=[self.model_params['rhostar']]
+                elif self.spar_param=='loose':
+                    self.model_params['rhostar'] = pm.Bound(pm.Normal, lower=0)("rhostar", mu=self.rhostar[0], sd=0.5*self.rhostar[0])
+                    spar_modelled_param+=[self.model_params['rhostar']]
+                elif self.spar_param=='logloose':
+                    self.model_params['logrhostar'] = pm.Normal("logrhostar", mu=np.log(self.rhostar[0]), sd=1)
+                    self.model_params['rhostar'] = pm.Deterministic("rhostar", tt.exp(self.model_params['logrhostar']))
+                    spar_modelled_param+=[self.model_params['logrhostar']]
+                self.model_params['Ms'] = pm.Deterministic("Ms", self.model_params['rhostar']*self.model_params['Rs']**3) #Ms and logg are interchangeably deterministic
+                self.model_params['logg'] = pm.Deterministic("logg",tt.log10(self.model_params['Ms']/self.model_params['Rs']**2)+4.41) #Ms and logg are interchangeably deterministic
+
             # -------------------------------------------
             #             Contamination
             # -------------------------------------------
@@ -1624,6 +1653,7 @@ class chexo_model():
             #More complex transit fit. Also RVs:
             ivars=[self.model_params['b'][pl] for pl in self.planets]+[self.model_params['logror'][pl] for pl in self.planets]+[self.model_params['logs_tess'],self.model_params['logs_cheops']]
             ivars+=[self.model_params['u_stars'][u] for u in self.model_params['u_stars']]
+            ivars+=spar_modelled_param
             if self.fit_ttvs:
                 for pl in self.planets:
                     if pl in self.model_params['transit_times']:
