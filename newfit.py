@@ -1411,8 +1411,13 @@ class chexo_model():
                 #print(self.model_comp[fk]['notr_waic'].keys())
                 #print(self.model_comp[fk]['notr_waic']['elpd_waic'])
                 #print(self.model_comp[fk]['notr_waic'].loc['elpd_waic'],self.model_comp[fk]['tr_waic'].loc['elpd_waic'],self.model_comp[fk]['notr_waic'].shape,self.model_comp[fk]['tr_waic'].shape)
-                self.model_comp[fk]['deltaWAIC']=self.model_comp[fk]['tr_waic']['waic']-self.model_comp[fk]['notr_waic']['waic']
-                waic_errs=np.sqrt(self.model_comp[fk]['tr_waic']['waic_se']**2+self.model_comp[fk]['notr_waic']['waic_se']**2)
+                if "elpd_waic" in self.model_comp[fk]['tr_waic']:
+                    self.model_comp[fk]['deltaWAIC']=self.model_comp[fk]['tr_waic']['elpd_waic']-self.model_comp[fk]['notr_waic']['elpd_waic']
+                    waic_errs=np.sqrt(self.model_comp[fk]['tr_waic'][1]**2+self.model_comp[fk]['notr_waic'][1]**2)
+                elif 'waic' in self.model_comp[fk]['tr_waic']:
+                    self.model_comp[fk]['deltaWAIC']=self.model_comp[fk]['tr_waic']['waic']-self.model_comp[fk]['notr_waic']['waic']
+                    waic_errs=np.sqrt(self.model_comp[fk]['tr_waic']['waic_se']**2+self.model_comp[fk]['notr_waic']['waic_se']**2)
+                
                 #self.model_comp[fk]['deltaWAIC']=waic_diffs.loc['waic','self']-waic_diffs.loc['waic','other']
                 confidence = np.array(["strongly prefers no transit","weakly prefers no transit","weakly prefers transit","strongly prefers transit"])[np.searchsorted([-1*waic_errs,0,waic_errs],self.model_comp[fk]['deltaWAIC'])]
                 self.model_comp[fk]['WAIC_pref_model']="transit" if self.model_comp[fk]['deltaWAIC']>0 else "no_transit"
@@ -4174,6 +4179,7 @@ class chexo_model():
             descr+="models offset above, with a best-fit line as well as 1- \& 2-$\\sigma$ regions. Lower panel shows the detrended {{\it CHEOPS}} photometry as well as the best-fit line as well as 1- \& 2-$\\sigma$ regions of a combined {\\it TESS} and {\\it CHEOPS} transit model."
             descr+="}\n\label{fig:CheopsOther}\n\end{figure}\n\n"
             descr+=""
+        return descr
 
 """
 @INPROCEEDINGS{Buchschacher2015,
