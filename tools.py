@@ -483,6 +483,51 @@ def roll_all_rollangles(roll_angles, mask=None):
         new_phi_jump=5*min_counts+2.5
     return (roll_angles-new_phi_jump)%360+new_phi_jump
 
+def create_angle_spline_dmatrix(phis,bkpt_cad=10):
+    from patsy import dmatrix
+    if np.max(np.diff(np.sort(phis)))<(2*bkpt_cad) and np.min(phis)<2*bkpt_cad and np.max(phis)>(360-2*bkpt_cad):
+        #No clear gap
+        av_cad=np.nanmedian(np.diff(np.sort(phis)))
+        n_knots=int(np.floor(len(phis)*av_cad/bkpt_cad))
+        knots=np.quantile(phis,np.linspace(0,1,2*n_knots)[1::2])
+        dmat_norm = dmatrix(
+            "bs(x, knots=knots, degree=3, include_intercept=True) - 1",
+            {"x": phis, "knots": knots},
+        )[:,2:-2]
+        dmat_shifted = dmatrix(
+            "bs(x, knots=knots, degree=3, include_intercept=True) - 1",
+            {"x": (phis-180)%360, "knots": np.sort((knots-180)%360)},
+        )[:,2:-2]
+        knot_shift=np.sum(knots>180)
+        knot_quads=np.searchsorted(knots,np.array([0,90,180,270,360]))
+        knot_quad_shift=np.searchsorted(np.sort((knots-180)%360),np.array([0,90,180,270,360]))
+        arr=np.hstack((dmat_shifted[:,knot_quad_shift[2]:knot_quad_shift[3]],
+                    dmat_norm[:,knot_quads[1]:knot_quads[3]],
+                    dmat_shifted[:,knot_quad_shift[1]:knot_quad_shift[2]]))
+        return arr,knots
+    else:
+        #Clear gap
+        av_cad=np.nanmedian(np.diff(np.sort(phis)))
+        n_knots=int(np.ceil(len(phis)*av_cad/bkpt_cad))
+        
+        #Finding gap 
+        folddoublephi=np.hstack([np.sort(phis),360+np.sort(phis)])
+        imaxgap=np.argmax(np.diff(folddoublephi))
+        gap_pos=0.5*(folddoublephi[imaxgap]+folddoublephi[imaxgap+1])
+        gap_pos=gap_pos-360 if gap_pos>360 else gap_pos
+        
+        knots=np.quantile(phis-gap_pos,np.linspace(0,1,2*n_knots)[1::2])+gap_pos
+        
+        dmat = dmatrix(
+            "bs(x, knots=knots, degree=3, include_intercept=True) - 1",
+            {"x": (phis-gap_pos)%360, "knots": np.sort((knots-gap_pos)%360)},
+        )[:,2:-2]
+        #Shifting back around so knots align with 0->360deg
+        knot_shift=np.sum(knots<gap_pos)
+        arr=np.hstack((dmat[:,-1*knot_shift:],dmat[:,:-1*knot_shift]))
+        print(knots,knot_shift,gap_pos,(len(knots)-knot_shift))
+        return arr,knots
+
 
 def vals_to_latex(vals):
     #Function to turn -1,0, and +1 sigma values into round latex strings for a table
@@ -524,3 +569,187 @@ def vals_to_overleaf(name,vals,include_short=True):
     if include_short:
         st+="\\newcommand{\\T"+name+"short}{"+vals_to_short(vals)+"}\n"
     return st
+
+
+def get_all_tois():
+    #Reading TOI data from web or file (updates every 10 days)
+    from astropy.time import Time
+    round_date=np.round(Time.now().jd,-1)
+    if not os.path.exists("TOI_tab_jd_"+str(int(round_date))+".csv"):
+        info=pd.read_csv("https://exofop.ipac.caltech.edu/tess/download_toi.php?sort=toi&output=csv")
+        info.to_csv("TOI_tab_jd_"+str(int(round_date))+".csv")
+    else:
+        info=pd.read_csv("TOI_tab_jd_"+str(int(round_date))+".csv",index_col=0)
+    info['star_TOI']=info['TOI'].values.astype(int)
+    return info
+
+def get_all_cheops_obs(toi_cat,overwrite=False):
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord
+    from astropy import units as u
+    round_date=np.round(Time.now().jd,-1)
+    if not os.path.exists("/home/hosborn/home1/python/chexoplanet/Chateaux/All_Obs"+str(int(round_date))+".csv") or overwrite:
+        #,"pi_name":{"equals":"Hugh OSBORN"},'data_arch_rev':{'equals':3}
+        #,"prog_id":{"contains":"CHEOPS-56"}
+        from dace_query.cheops import Cheops
+        all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=500,filters={"prog_id":{"contains":["CHEOPS-56","CHEOPS-9000"]}}))
+        #ext_cheops_obs=pd.DataFrame(Cheops.query_database(limit=500,filters={"prog_id":{"equals":[900051]}}))
+        #all_cheops_obs=pd.concat([pri_cheops_obs,ext_cheops_obs],axis=0)
+        all_cheops_obs=all_cheops_obs.loc[(all_cheops_obs['data_arch_rev']==3)&(all_cheops_obs['pi_name']=="Hugh Osborn")]
+        print(all_cheops_obs)
+
+        #print(all_cheops_obs['obj_id_catname'].values)
+        #Getting RaDec from string:
+        obs_radecs=SkyCoord([rd.split(" / ")[0] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
+                            [rd.split(" / ")[1] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values],
+                            unit=(u.hourangle,u.deg))
+        all_cheops_obs['ra']  = obs_radecs.ra.deg
+        all_cheops_obs['dec'] = obs_radecs.dec.deg
+        
+        #Using Observed RA/Dec and TOI RA/Dec to match these:
+        
+        toi_radecs=SkyCoord(toi_cat['RA'].values,toi_cat['Dec'].values,
+                            unit=(u.hourangle,u.deg),
+                            pm_ra_cosdec=np.array([pmra if np.isfinite(pmra) else 0.0 for pmra in toi_cat['PM RA (mas/yr)'].values])*u.mas/u.year,
+                            pm_dec=np.array([pmdec if np.isfinite(pmdec) else 0.0 for pmdec in toi_cat['PM Dec (mas/yr)'].values])*u.mas/u.year,
+                            obstime=Time(2015.5,format='jyear'))
+        toi_radecs_epoch2000 = toi_radecs.apply_space_motion(Time(2000.0,format='jyear'))
+        idx, d2d, _ = obs_radecs.match_to_catalog_sky(toi_radecs_epoch2000)
+        #all_cheops_obs.iloc[np.argmin(d2d.arcsec)],all_cheops_obs.iloc[np.argmax(d2d.arcsec)])
+        assert np.all(d2d < 3*u.arcsec), "All the Observed TOIs should match RA/Dec to the TOI catalogue - "+str(np.sum(d2d > 3*u.arcsec))+"are not found ("+",".join(list(all_cheops_obs.loc[d2d > 3*u.arcsec,'obj_id_catname'].values))+")"
+        all_cheops_obs['star_TOI']=toi_cat["star_TOI"].values[idx]
+        all_cheops_obs['TIC ID']=toi_cat["TIC ID"].values[idx]
+        all_cheops_obs.to_csv("/home/hosborn/home1/python/chexoplanet/Chateaux/All_Obs"+str(int(round_date))+".csv")
+    else:
+        all_cheops_obs=pd.read_csv("/home/hosborn/home1/python/chexoplanet/Chateaux/All_Obs"+str(int(round_date))+".csv")
+
+    return all_cheops_obs
+
+def get_cheops_ORs():
+    #Get the CHEOPS ORs which contain basic info about planet ephemeris
+    
+    #Reading input data from PHT2
+    input_ors_pri=pd.read_csv("/home/hosborn/home1/python/chexoplanet/Chateaux/Chateaux_ORs_pri.csv")
+    input_ors_ext=pd.read_csv("/home/hosborn/home1/python/chexoplanet/Chateaux/Chateaux_ORs_ext.csv")
+    input_ors=pd.concat([input_ors_pri,input_ors_ext])
+    input_ors=input_ors.set_index(np.arange(len(input_ors)))
+    #Changing non-obvious names to the TOI:
+    #input_ors['TOI_name'] = [change_dic[o] if o in change_dic else o.replace("-","").upper() for o in input_ors['Target Name'].values]
+    input_ors['file_key']=["CH_PR"+str(int(input_ors.iloc[i]['Programme Type']))+str(int(input_ors.iloc[i]['Programme Id'])).zfill(4)+"_TG"+str(int(input_ors.iloc[i]['Observation Request Id'])).zfill(4)+"01_V0300" for i in range(len(input_ors))]
+    newsers=[]
+    nior=len(input_ors)
+    for ior,orrow in input_ors.loc[input_ors['Number Of Visits']>1].iterrows():
+        ser=input_ors.loc[ior]
+        ser['file_key']=ser['file_key'].replace("01_V0300","02_V0300")
+        ser=ser.rename(nior)
+        newsers+=[ser]
+        nior+=1
+    input_ors=pd.concat([input_ors,pd.concat(newsers,axis=1).T],axis=0)
+    #input_ors=input_ors.set_index(np.arange(len(input_ors)))
+
+    return input_ors
+
+def update_period_w_tls(time,flux,per):
+    from transitleastsquares import transitleastsquares as tls
+    tlsmodel=tls(t=time,
+                y=1+flux*1e-3)
+    outtls=tlsmodel.power(period_min=per*0.995,period_max=per*1.005,use_threads=4,duration_grid_step=1.05,
+                        oversampling_factor=2,transit_depth_min=100e-6)
+    return outtls.period
+
+def ProcessTOI(toi,toi_cat,all_cheops_obs,cheops_ors,commentstring="V0300_horus",**kwargs):
+    import glob
+    #step 1 - get observations of a given TOI
+    if len(glob.glob("/home/hosborn/home1/data/Cheops_data/TOI"+str(toi)+"/*"+commentstring+"_model.pkl"))>0:
+        print("Skipping TOI="+str(toi),"("+str(len(glob.glob("/home/hosborn/home1/data/Cheops_data/TOI"+str(toi)+"/*"+commentstring+"_model.pkl")))+"files found)")
+        return None
+
+    #Getting the data from TOI list, OR list and Observation list for this TOI:
+    these_obs=all_cheops_obs.loc[all_cheops_obs['star_TOI']==toi]
+    these_tois=toi_cat.loc[toi_cat['star_TOI']==toi].sort_values('Period (days)')
+    these_ors=cheops_ors.loc[cheops_ors['Target Name']==these_obs.iloc[0]['obj_id_catname']]
+    fks=[f.replace("CH_","") for f in these_obs.loc[:,'file_key'].values]
+    print(toi, fks)
+
+    #Figuring out which TOI links to which observation (if any)
+    these_obs['TOI']=np.zeros(len(these_obs))
+    print(these_ors['file_key'])
+    for i,iob in these_obs.iterrows():
+        #print(fk,"CH_"+fk in these_obs['file_key'].values,"CH_"+fk in these_ors['file_key'].values)
+        fk=iob['file_key']
+        ior=these_ors.loc[these_ors['file_key']==fk]#.iloc[0]
+        print(fk,type(ior),ior.shape)
+        ior=ior.iloc[0] if type(ior)==pd.DataFrame else ior
+        itoi=np.argmin((these_tois['Period (days)'].values.astype(float)-float(ior["Transit Period [day]"]))**2)
+        these_obs.loc[i,'TOI']=these_tois['TOI'].values[itoi]
+        these_ors.loc[these_ors['file_key']=="CH_"+fk,'TOI']=these_tois['TOI'].values[itoi]    
+    
+    #Loading lightcurve
+    from MonoTools.MonoTools import lightcurve
+    lc=lightcurve.multilc(these_tois.iloc[0]['TIC ID'],'tess',load=False,update_tess_file=False)
+                          #radec=SkyCoord(these_obs.iloc[0]['ra']*u.deg,these_obs.iloc[0]['dec']*u.deg),load=False)
+    from . import newfit
+    #Initialising model
+    mod = newfit.chexo_model("TOI"+str(toi), radec=lc.radec, overwrite=True, 
+                             comment=commentstring, save_file_loc="/home/hosborn/home1/data/Cheops_data")
+    mod.get_tess()
+    for i,iob in these_obs.iterrows():
+        print(type(iob['file_key']),iob['file_key'])
+        mod.add_cheops_lc(filekey=iob['file_key'].replace("CH_",""), PIPE=True, DRP=False, download=True,
+                          mag=iob['obj_mag_v'], Teff=lc.all_ids['tess']['data']['Teff'])
+    
+    #Rstar, Teff, logg = tools.starpars_from_MonoTools_lc(lc)
+    #mod.init_starpars(Rstar=Rstar,Teff=Teff,logg=logg)
+    #mod.add_lc(lc.time+2457000,lc.flux,lc.flux_err)
+    #for fk in fks:
+    #    mod.add_cheops_lc(filekey=fk,fileloc=None, download=True, PIPE=True, DRP=False,
+    #                      mag=lc.all_ids['tess']['data']['Tmag'])
+    
+    #for i,itoi in these_tois.iterrows():
+    #    toi_to_or_link[i]=np.argmin((itoi['Period (days)']-these_ors["Transit Period [day]"].values.astype(float))**2)
+    #    toi_to_obs_link[i]=these_obs['filekey'].values.index(these_ors.loc[toi_to_or_link[i],'filekey'])
+    
+    for nix in range(these_tois.shape[0]):
+        itoi=these_tois['TOI'].values[nix]
+        if itoi in these_ors['TOI'].values:
+            #We have scheduled this TOI - it has updated period from our fit
+            mod.add_planet("bcdef"[nix],
+                        tcen=float(these_ors.loc[these_ors['TOI']==itoi]['Transit Time  [BJD_TDB]']),
+                        tcen_err=float(these_tois.iloc[nix]['Epoch (BJD) err']),
+                        tdur=float(these_tois.iloc[nix]['Duration (hours)'])/24,
+                        depth=float(these_tois.iloc[nix]['Depth (ppm)'])/1e6,
+                        period=float(these_ors.loc[these_ors['TOI']==itoi]['Transit Period [day]']),
+                        period_err=2*float(these_tois.iloc[nix]['Period (days) err']),**kwargs)
+        else:
+            #We don't have an observation/OR for this one
+            mod.add_planet("bcdef"[nix],
+                        tcen=float(these_tois.iloc[nix]['Epoch (BJD)']),
+                        tcen_err=float(these_tois.iloc[nix]['Epoch (BJD) err']),
+                        tdur=float(these_tois.iloc[nix]['Duration (hours)'])/24,
+                        depth=float(these_tois.iloc[nix]['Depth (ppm)'])/1e6,
+                        period=float(these_tois.iloc[nix]['Period (days)']),
+                        period_err=2*float(these_tois.iloc[nix]['Period (days) err']))
+    print(mod.planets)
+    #try:
+    #Initialising lightcurves:
+    mod.init_lc(fit_gp=False, fit_flat=True, cut_oot=True, bin_oot=False)
+    mod.init_cheops(use_bayes_fact=True, use_signif=False, overwrite=False)
+
+    #Initialising full model:
+    mod.init_model(use_mstar=False, use_logg=True,fit_phi_spline=True,fit_phi_gp=False,phi_model_type="common",
+                    constrain_lds=True, fit_ttvs=False, assume_circ=True)
+
+    mod.sample_model()
+    mod.model_comparison_cheops()
+
+    #mod.plot_rollangle_gps(save=True)
+    mod.plot_rollangle_model(save=True)
+    mod.plot_cheops(save=True,show_detrend=True)
+    mod.plot_phot('tess',save=True)
+    mod.plot_transits_fold(save=True)
+    
+    df=mod.save_trace_summary()
+    mod.save_model_to_file()
+    
+    mod.MakeExoFopFiles(list(["TOI"+t for t in these_tois['TOI'].values.astype(str)]),
+                        upload_loc="/home/hosborn/home1/data/Cheops_data/Ext_ChATeAUX/")

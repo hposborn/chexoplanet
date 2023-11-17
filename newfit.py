@@ -148,8 +148,18 @@ class chexo_model():
             cad_ix=(self.monotools_lc.mask)&(misss==unq_miss_id)
             self.add_lc(self.monotools_lc.time[cad_ix]+2457000,self.monotools_lc.flux[cad_ix],self.monotools_lc.flux_err[cad_ix],source=lc_dic_flipped[unq_miss_id])
 
-    def get_cheops(self,catname=None, n_prog=None, distthresh=3,download=True,PIPE=True,fks=None,**kwargs):
-        """Automatically download CHEOPS data using Dace
+    def get_cheops(self, catname=None, n_prog=None, distthresh=3, download=True, PIPE=True, fks=None, start_date=None,end_date=None, **kwargs):
+        """Automatically download CHEOPS data using Dace.
+
+        Args:
+        catname - Dace catalogue name if different from the intiialised object name. Default = None
+        n_prog - Number of GTO programme. Default = None
+        distthresh - Distance in arcsec to call a target a match to the observed CHEOPS observation table. Default = 3
+        download - Whether to download the data or simply load/use on the fly. Default = True
+        PIPE - Whether to use PIPE for the CHEOPS data. Default = True
+        fks - List of CHEOPS filekeys to use. Default = None
+        start_date - Date from which to access CHEOPS data
+        end_date - Date until when to access CHEOPS data
         """
         catname= self.name if catname is None else catname
         these_cheops_obs=[]
@@ -190,15 +200,22 @@ class chexo_model():
                 print(np.min(self.radec.separation(all_radecs).arcsec), these_cheops_obs)
             n_try+=1
 
-        print(these_cheops_obs['file_key'].values)
+        #print(these_cheops_obs['file_key'].values)
         if fks is not None:
             fks=[f.replace("CH_","") for f in fks]
             these_cheops_obs=these_cheops_obs.loc[np.array([f.replace("CH_","") in fks for f in these_cheops_obs['file_key'].values])]
-        print(these_cheops_obs['file_key'].values)
+        #print(these_cheops_obs['file_key'].values)
 
         assert these_cheops_obs.shape[0]>0, "No matches found in the CHEOPS database. Are you logged in via your .dacerc file?"
         for fk in these_cheops_obs['file_key'].values:
-            print(fk)
+            if "V0200" in fk and fk.replace("V0200","V0300") in these_cheops_obs['file_key'].values:
+                #Skipping if there's a better/newer reduction available.
+                continue
+            t_obs=Time(these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'date_mjd_start'].values,format='mjd').jd
+            if (end_date is not None and t_obs<end_date) or (start_date is not None and t_obs>start_date):
+                #Skipping if the observation is not within the start/end date...
+                continue
+            
             ifk=fk[3:] if fk[:3]=="CH_" else fk
             if hasattr(self,'monotools_lc'):
                 self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE,
@@ -209,6 +226,11 @@ class chexo_model():
                                    #self.monotools_lc.all_ids['tess']['data'][`'GAIAmag']
 
     def filter_TOI(self,threshdist=3):
+        """Load the TOI list (using `get_TOI`) and then find the specific case which either refers to the name given to this target, or to the RA/Dec (within threshdic arcsec)
+
+        Args:
+        threshdic - Threshhold in arcsecs below which to associate the target with a given TOI.
+        """
         if not hasattr(self,'toi_cat'):
             self.get_TOI()
         if "TOI" in self.name and int(self.name.replace('-','')[3:]) in self.toi_cat['star_TOI'].values:
@@ -223,6 +245,7 @@ class chexo_model():
             raise ValueError()
 
     def get_TOI(self):
+        """Get TOI info. We either download the TOI catalogue from ExoFop, or if this was recently accessed, we load the TOI catalogue from the data/tables folder in cheoxplanet"""
         round_date=int(np.round(Time.now().jd,-1))
         if not os.path.exists(os.path.join(tablepath,"TOI_tab_jd_"+str(round_date)+".csv")):
             self.toi_cat=pd.read_csv("https://exofop.ipac.caltech.edu/tess/download_toi.php?sort=toi&output=csv")
@@ -232,6 +255,8 @@ class chexo_model():
             self.toi_cat=pd.read_csv(os.path.join(tablepath,"TOI_tab_jd_"+str(round_date)+".csv"),index_col=0)
 
     def update(self,**kwargs):
+        """Update global parameters
+        """
         #Updating settings
         for param in kwargs:
             if param in self.defaults:
@@ -256,6 +281,12 @@ class chexo_model():
 
 
     def add_lc(self, time, flux, flux_err, mask=None, source='tess'):
+        """Add photometric lightcurve to the model.
+        
+        Args:
+        time - np.array - Time in BJD
+        flux - np.array - Flux in ppt (normalised to zero)
+        flux_err - np.array - Flux errors in ppt """
         if not hasattr(self,'lcs'):
             self.lcs={}
         self.lcs[source]=pd.DataFrame({'time':time,'flux':flux,'flux_err':flux_err})
@@ -447,6 +478,30 @@ class chexo_model():
                      'bg':'BG', 'centroidx':'XC'+binchar,'phi':'ROLL', 
                      'centroidy':'YC'+binchar, 'deltaT':'thermFront_2','smear':None}
         elif DRP:
+            v3list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-*V0300.fits"))
+            if len(v3list)==0:
+                #No V0300 - need to use 
+                v2list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits"))
+                assert len(v2list)>0, "Either V0200 and V0300 lightcurve files must be found within "+os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits")
+                fileloc = v2list[0]
+            else:
+                #Need to find the optimal aperture... Using 90th-10h percentile of
+                v3dic={}
+                lcstats={}
+                aps=[]
+                for v in v3list:
+                    ap=v.split("-R")[-1].split("_")[0]
+                    aps+=[ap]
+                    v3dic[ap]=v
+                    f=fits.open(v)
+                    highlow=np.nanpercentile(f[1].data['FLUX'],[2.5,97.5])
+                    highlowcutmask=(f[1].data['FLUX']>highlow[0])&(f[1].data['FLUX']<highlow[1])&np.isfinite(f[1].data['FLUX'])
+                    lcstats[ap] = {'medflux':np.nanmedian(f[1].data['FLUX'][highlowcutmask]), 'std':np.nanstd(f[1].data['FLUX'][highlowcutmask])}
+                    lcstats[ap]['rel_std'] = np.nanstd(f[1].data['FLUX'][highlowcutmask]/lcstats[ap]['medflux'])
+                    lcstats[ap]['rel_med_abs_diff'] = np.nanmedian(abs(np.diff(f[1].data['FLUX'][highlowcutmask]/lcstats[ap]['medflux'])))
+                best=aps[np.argmin([1/(1/lcstats[a]['rel_std']**2+1/lcstats[a]['rel_med_abs_diff']**2)**0.5 for a in v3dic])]
+                fileloc = v3dic[best]
+                
             sources={'time':'BJD_TIME', 'flux':'FLUX', 'flux_err':'FLUXERR', 
                      'bg':'BACKGROUND', 'centroidx':'CENTROID_X', 
                      'centroidy':'CENTROID_Y', 'deltaT':None, 'smear':'SMEARING_LC','phi':'ROLL_ANGLE', }
@@ -480,7 +535,7 @@ class chexo_model():
                 #Performing simple anomaly masking using background limit, nans, and flux outliers:
                 iche['mask']=(~np.isnan(iche['flux']))&(~np.isnan(iche['flux_err']))&cut_anom_diff(iche['flux'].values)&(iche['bg']<bgthresh)&(iche['flux']>ylims[0])&(iche['flux']<ylims[-1])
                 #iche['mask']=cut_high_rollangle_scatter(iche['mask'].values,iche[s].values,iche['flux'].values,iche['raw_flux_err'].values,**kwargs)
-                iche[s]=roll_rollangles(iche[s].values,mask=iche['mask'])
+                #iche[s]=roll_rollangles(iche[s].values,mask=iche['mask'])
         iche['xoff']=iche['centroidx']-np.nanmedian(iche['centroidx'])
         iche['yoff']=iche['centroidy']-np.nanmedian(iche['centroidy'])
         iche['phi_sorting']=np.argsort(iche['phi'].values)
@@ -568,26 +623,55 @@ class chexo_model():
         """
         self.update(**kwargs)
 
-        if Rstar is None and hasattr(self.lc,'all_ids') and 'tess' in self.lc.all_ids and 'data' in self.lc.all_ids['tess'] and 'rad' in self.lc.all_ids['tess']['data']:
+        if Rstar is None and hasattr(self.monotools_lc,'all_ids') and 'tess' in self.monotools_lc.all_ids and 'data' in self.monotools_lc.all_ids['tess'] and 'rad' in self.monotools_lc.all_ids['tess']['data']:
             #Radius info from lightcurve data (TIC)
-            if 'eneg_Rad' in self.lc.all_ids['tess']['data'] and self.lc.all_ids['tess']['data']['eneg_Rad'] is not None and self.lc.all_ids['tess']['data']['eneg_Rad']>0:
-                Rstar=self.lc.all_ids['tess']['data'][['rad','eneg_Rad','epos_Rad']].values
+            if 'eneg_Rad' in self.monotools_lc.all_ids['tess']['data'] and self.monotools_lc.all_ids['tess']['data']['eneg_Rad'] is not None and self.monotools_lc.all_ids['tess']['data']['eneg_Rad']>0:
+                Rstar=self.monotools_lc.all_ids['tess']['data'][['rad','eneg_Rad','epos_Rad']].values
             else:
-                Rstar=self.lc.all_ids['tess']['data'][['rad','e_rad','e_rad']].values
-            if 'eneg_Teff' in self.lc.all_ids['tess']['data'] and self.lc.all_ids['tess']['data']['eneg_Teff'] is not None and self.lc.all_ids['tess']['data']['eneg_Teff']>0:
-                Teff=self.lc.all_ids['tess']['data'][['Teff','eneg_Teff','epos_Teff']].values
+                Rstar=self.monotools_lc.all_ids['tess']['data'][['rad','e_rad','e_rad']].values
+        if (Rstar is None)|(np.all(np.isnan(np.array(Rstar).astype(float)))):
+            Rstar=None
+        elif np.isnan(Rstar[1]) or np.isnan(Rstar[2]):
+            Rstar=[Rstar[0],0.2*Rstar[0],0.2*Rstar[0]]
+        if Teff is None and hasattr(self.monotools_lc,'all_ids') and 'tess' in self.monotools_lc.all_ids and 'data' in self.monotools_lc.all_ids['tess'] and 'Teff' in self.monotools_lc.all_ids['tess']['data']:
+            if 'eneg_Teff' in self.monotools_lc.all_ids['tess']['data'] and self.monotools_lc.all_ids['tess']['data']['eneg_Teff'] is not None and self.monotools_lc.all_ids['tess']['data']['eneg_Teff']>0:
+                Teff=self.monotools_lc.all_ids['tess']['data'][['Teff','eneg_Teff','epos_Teff']].values
             else:
-                Teff=self.lc.all_ids['tess']['data'][['Teff','e_Teff','e_Teff']].values
-            if 'eneg_logg' in self.lc.all_ids['tess']['data'] and self.lc.all_ids['tess']['data']['eneg_logg'] is not None and self.lc.all_ids['tess']['data']['eneg_logg']>0:
-                logg=self.lc.all_ids['tess']['data'][['logg','eneg_logg','epos_logg']].values
+                Teff=self.monotools_lc.all_ids['tess']['data'][['Teff','e_Teff','e_Teff']].values
+        print(Teff,type(Teff),type(Teff[0]))
+        if (Teff is None)|(np.all(np.isnan(np.array(Teff).astype(float)))):
+            Teff=None
+        elif np.isnan(Teff[1]) or np.isnan(Teff[2]):
+            Teff=[Teff[0],250,250]
+
+        if logg is None and hasattr(self.monotools_lc,'all_ids') and 'tess' in self.monotools_lc.all_ids and 'data' in self.monotools_lc.all_ids['tess'] and 'logg' in self.monotools_lc.all_ids['tess']['data']:
+            if 'eneg_logg' in self.monotools_lc.all_ids['tess']['data'] and self.monotools_lc.all_ids['tess']['data']['eneg_logg'] is not None and self.monotools_lc.all_ids['tess']['data']['eneg_logg']>0:
+                logg=self.monotools_lc.all_ids['tess']['data'][['logg','eneg_logg','epos_logg']].values
             else:
-                logg=self.lc.all_ids['tess']['data'][['logg','e_logg','e_logg']].values
+                logg=self.monotools_lc.all_ids['tess']['data'][['logg','e_logg','e_logg']].values
+        if (logg is None )|( np.all(np.isnan(np.array(logg).astype(float)))):
+            logg=None
+        elif np.isnan(logg[1]) or np.isnan(logg[2]):
+            logg=[logg[0],0.25,0.25]
+
+        if Rstar is None and Teff is not None and not np.isnan(Teff[0]) and hasattr(self,'monotools_lc'):
+            #Approximating from Teff
+            Mstar=[(Teff[0]/5770)**(7/4)]
+            Mstar+=[0.5*Mstar[0],0.5*Mstar[0]]
+            Rstar=[Mstar[0]**(3/7)]
+            Rstar+=[0.5*Rstar[0],0.5*Rstar[0]]
+        if logg is None and Mstar is not None and Rstar is not None:
+            logg=[np.log(Mstar[0]/(Rstar[0]**2))+4.41]
+            logg+=[np.log((Mstar[0]-Mstar[1])/((Rstar[0]+Rstar[2])**2))+4.41-logg[0]]
+            logg+=[np.log((Mstar[0]+Mstar[2])/((Rstar[0]-Rstar[1])**2))+4.41-logg[0]]
+
+        #Stellar coordinates still None so using roughly stellar parameters
         if Rstar is None:
-            Rstar=np.array([1.0,0.08,0.08])
+            Rstar=[1.0,0.15,0.15]
         if Teff is None:
-            Teff=np.array([5227,100,100])
+            Teff=[5777,300,300]
         if logg is None:
-            logg=np.array([4.3,1.0,1.0])
+            logg=[4.3,1.0,1.0]
 
         self.Rstar=np.array(Rstar).astype(float)
         self.Teff=np.array(Teff).astype(float)
@@ -625,7 +709,7 @@ class chexo_model():
             if Mstar is None:
                 self.Mstar=rhostar[0]*self.Rstar[0]**3
 
-    def add_planets_from_toi(self,add_starpars=True):
+    def add_planets_from_toi(self,add_starpars=True,overwrite=False):
         """Add all TOIs to the model as planets
         """
         assert hasattr(self,'init_toi_data')
@@ -641,8 +725,8 @@ class chexo_model():
                             period=float(row[1]['Period (days)']),
                             period_err=float(row[1]['Period (days) err']))
             
-    def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None,
-                   period_err=None, b=None, rprs=None, K=None, overwrite=False):
+    def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None, period_err=None, b=None, 
+                   rprs=None, K=None, overwrite=False,check_per=True,force_check_per=False,**kwargs):
         """Add planet to the model
 
         Args:
@@ -656,11 +740,18 @@ class chexo_model():
             b (float,optional): impact parameter
             rprs (float,optional): radius ratio
             K (float,optional): RV semi-amplitude in m/s
+            check_per (bool, optional): Whether to check the lightcurve data to see if period can be improved...
+            force_check_per (bool, optional): Insist that we run TLS to check, using lightcurve data, if period can be improved.
         """
         assert name not in self.planets or overwrite, "Name is already stored as a planet"
         
         if period_err is None:
-            period_err = self.timing_sd_durs*tdur/period
+            if 'tess' in self.lcs:
+                span=np.ptp(self.lcs['tess']['time']) 
+            else:
+                span=365.25 #Guess 1yr span.
+            #period_err=0.4*pl[1]['duration']*pl[1]['true period']/730
+            period_err = self.timing_sd_durs*tdur*period/span
 
         if rprs is None:
             assert depth<0.25 #Depth must be a ratio (not in mmags)
@@ -673,6 +764,14 @@ class chexo_model():
             b=np.clip((1+rprs)**2 - (tdur*86400)**2 * \
                                 ((3*period*86400) / (np.pi**2*6.67e-11*rho_S*1410))**(-2/3),
                                 0.01,2.0)**0.5
+        
+        if hasattr(self,'monotools_lc') and check_per:
+            ntrans=np.round((np.nanmedian(np.max(self.monotools_lc.time))-tcen)/period)
+            if (tcen+period_err*ntrans)>tdur*0.666 or force_check_per:
+                self.monotools_lc.flatten(transit_mask=((self.monotools_lc.time-tcen-0.5*period)%period-0.5*period)<0.5*tdur)
+                newper=update_period_w_tls(self.monotools_lc.time[self.monotools_lc.mask],
+                                           self.monotools_lc.flux_flat[self.monotools_lc.mask],period)
+
         self.planets[name]={'tcen':tcen,'tcen_err':tcen_err if tcen_err is not None else 0.25*tdur,
                             'period':period,'period_err':period_err,'tdur':tdur,'depth':depth,
                             'b':b,'rprs':rprs,'K':K}
@@ -698,32 +797,31 @@ class chexo_model():
         assert ~(self.cut_oot&self.bin_oot), "Cannot both cut and bin out of transit data. Pick one."
         assert ~(self.fit_flat&self.fit_gp), "Cannot both flatten data and fit GP. Choose one"        
         
-        
         #masking, binning, flattening light curve
 
         if not hasattr(self,'binlc'):
             self.binlc={}
         if not hasattr(self,'lc_fit') or self.overwrite:
             self.lc_fit={scope:pd.DataFrame() for scope in self.lcs}
-
         for src in self.lcs:
+            
             if src=="cheops":
                 self.init_cheops()
             else:
                 self.lcs[src]['mask']=~np.isnan(self.lcs[src]['flux'].values)&~np.isnan(self.lcs[src]['flux_err'].values)
                 self.lcs[src]['mask'][self.lcs[src]['mask']]=cut_anom_diff(self.lcs[src]['flux'].values[self.lcs[src]['mask']])
                 self.lcs[src]['mask'][self.lcs[src]['mask']]=cut_anom_diff(self.lcs[src]['flux'].values[self.lcs[src]['mask']])
-                self.lcs[src]['in_trans'] = np.tile(False,len(self.lcs[src]['mask']))
+                
                 self.lcs[src]['near_trans'] = np.tile(False,len(self.lcs[src]['mask']))
                 for pl in self.planets:
-                    self.lcs[src]['in_trans']+=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<(self.mask_distance*self.planets[pl]['tdur'])
+                    self.lcs[src]['in_trans_'+pl]=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<(self.mask_distance*self.planets[pl]['tdur'])
                     self.lcs[src]['near_trans']+=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.cut_distance*self.planets[pl]['tdur']
-
+                self.lcs[src]['in_trans_all'] = np.any(np.vstack([self.lcs[src]['in_trans_'+pl] for pl in self.planets]),axis=0)
                 #FLATTENING
                 if self.fit_flat:
                     spline, newmask = kepler_spline(self.lcs[src]['time'].values[self.lcs[src]['mask']],
                                                     self.lcs[src]['flux'].values[self.lcs[src]['mask']], 
-                                                    transit_mask=~self.lcs[src]['in_trans'][self.lcs[src]['mask']],bk_space=self.flat_knotdist)
+                                                    transit_mask=~self.lcs[src]['in_trans_all'][self.lcs[src]['mask']],bk_space=self.flat_knotdist)
                     self.lcs[src]['spline']=np.tile(np.nan,len(self.lcs[src]['time']))
                     self.lcs[src].loc[self.lcs[src]['mask'],'spline']=spline
                     self.lcs[src]['flux_flat']=self.lcs[src]['flux'].values
@@ -749,12 +847,13 @@ class chexo_model():
                                             self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
                                             self.bin_size)
                     self.binlc[src]['spline']=splinebin[:,1]
-                self.binlc[src]['in_trans'] = np.tile(False,len(self.binlc[src]['time']))
                 self.binlc[src]['near_trans'] = np.tile(False,len(self.binlc[src]['time']))
                 for pl in self.planets:
-                    self.binlc[src]['in_trans']+=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.mask_distance*self.planets[pl]['tdur']
+                    self.binlc[src]['in_trans_'+pl]=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.mask_distance*self.planets[pl]['tdur']
                     self.binlc[src]['near_trans']+=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.cut_distance*self.planets[pl]['tdur']
-                vals=['time','flux','flux_err','in_trans','near_trans']
+                self.binlc[src]['in_trans_all']=np.any(np.vstack([self.binlc[src]['in_trans_'+pl] for pl in self.planets]),axis=0)
+                vals=['time','flux','flux_err','in_trans_all','near_trans']
+                vals+=['in_trans_'+pl for pl in self.planets]
                 if self.fit_flat: vals+=['spline']
                 for val in vals:
                     srcval='flux_flat' if val=='flux' and self.fit_flat else val
@@ -814,9 +913,9 @@ class chexo_model():
             lcrange=27
             av_dur = np.average([self.planets[key]['tdur'] for key in self.planets])
             success=False;target=0.05
-            exps=np.array([np.log((2*np.pi)/(av_dur)),np.log((2*np.pi)/(0.25*lcrange))])
-            log_w0 = pm.Normal("log_w0",mu=(exps[0]+exps[1])/2,sd=np.ptp(exps)/8)
-            w0 = pm.Deterministic("w0",tt.exp(log_w0))
+            exps=np.array([np.log((2*np.pi)/(av_dur)), np.log((2*np.pi)/(0.25*lcrange))])
+            log_w0 = pm.Normal("log_w0", mu=(exps[0]+exps[1])/2, sd=np.ptp(exps)/5)
+            w0 = pm.Deterministic("w0", tt.exp(log_w0))
             # while not success and target<0.21:
             #     try:
             #         low=(2*np.pi)/(0.25*lcrange/(target/0.05))
@@ -832,9 +931,9 @@ class chexo_model():
             
             #Initialising the power:
             success=False;target=0.01
-            maxpower=1.0*np.max([np.nanstd(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans'],'flux'].values) for scope in self.lcs])
-            minpower=0.02*np.min([np.nanmedian(abs(np.diff(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans'],'flux'].values))) for scope in self.lcs])
-            
+            maxpower=1.0*np.max([np.nanstd(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values) for scope in self.lcs])
+            minpower=0.02*np.min([np.nanmedian(abs(np.diff(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values))) for scope in self.lcs])
+            power=None
             while not success and target<0.25:
                 try:
                     power = pm.InverseGamma("power",testval=minpower*5,
@@ -846,6 +945,10 @@ class chexo_model():
                     target*=1.15
                     success=False
             #print("power",success,target)
+            if power is None:
+                logspan=np.log(maxpower)-np.log(minpower)
+                logpower = pm.Normal("logpower", mu=np.log(minpower)+0.3333*logspan, sd=logspan/3)
+                power = pm.Deterministic("power", tt.exp(logpower))
             S0 = pm.Deterministic("S0", power/(w0**4))
 
             # GP model for the light curve
@@ -855,16 +958,16 @@ class chexo_model():
                 if scope!="cheops":
                     means[scope] = pm.Normal(scope+"_mean", mu=0.0, sd=10.0, testval=np.nanmedian(self.lcs[scope]['flux']))
             gp = celerite2.theano.GaussianProcess(kernel)
-            allt=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans'],'time'].values for scope in self.lcs if scope!="cheops"])
-            ally=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans'],'flux'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
-            allyerr=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans'],'flux_err'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
+            allt=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'time'].values for scope in self.lcs if scope!="cheops"])
+            ally=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
+            allyerr=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux_err'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
             allsrcs=np.hstack([np.tile(iscope,len(self.lc_fit[list(self.lcs.keys())[iscope]]['time'])) for iscope in np.arange(len(self.lcs))])[np.argsort(allt)]
-            allsrcs=np.column_stack((np.isin(allsrcs,i) for i in range(len(self.lcs))))
+            allsrcs=np.column_stack((np.isin(allsrcs,i) for i in range(len(logs))))
             allt=np.sort(allt)
             gp.compute(allt,diag=allyerr ** 2 + tt.dot(allsrcs,tt.exp([logs[scope] for scope in logs])**2), quiet=True)
             gp.marginal("obs", observed=ally-tt.dot(allsrcs,[means[scope] for scope in logs]))
             
-            #photgp_model_x = pm.Deterministic("photgp_model_x", gp.predict(self.lc_fit['flux'][~self.lc_fit['in_trans']], t=self.lc_fit['time'][~self.lc_fit['in_trans']], return_var=False))
+            #photgp_model_x = pm.Deterministic("photgp_model_x", gp.predict(self.lc_fit['flux'][~self.lc_fit['in_trans_all']], t=self.lc_fit['time'][~self.lc_fit['in_trans_all']], return_var=False))
 
             #optimizing:
             start = ootmodel.test_point
@@ -1081,7 +1184,7 @@ class chexo_model():
         assert hasattr(self,"Rstar"), "Must have initialised stellar parameters using `model.init_starpars`"
         assert self.use_signif^self.use_bayes_fact, "Must either use the significant detrending params or use the bayes factors, not both."
 
-        self.lcs["cheops"]['phi']=roll_all_rollangles(self.lcs["cheops"]['phi'].values) #Performing a coherent "gap detection" of roll angles across all filekeys
+        #self.lcs["cheops"]['phi']=roll_all_rollangles(self.lcs["cheops"]['phi'].values) #Performing a coherent "gap detection" of roll angles across all filekeys
         
         #Initialising Cheops LD dists:
         if not hasattr(self,'ld_dists'):
@@ -1102,6 +1205,7 @@ class chexo_model():
         for fk in self.cheops_filekeys:
             mint=np.min(self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,'time'].values)
             maxt=np.max(self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,'time'].values)
+            print(mint,maxt,self.cheops_cad)
             ix_gaps=np.min(abs(np.arange(mint,maxt,self.cheops_cad)[:,None]-self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,'time'].values[None,:]),axis=1)>0.66*self.cheops_cad
             self.cheops_gap_timeseries+=[np.arange(mint,maxt,self.cheops_cad)[ix_gaps]]
             self.cheops_gap_fks+=[np.tile(fk, np.sum(ix_gaps))]
@@ -1276,8 +1380,10 @@ class chexo_model():
             return np.column_stack([split_info[ns]['data_ix'] for ns in split_info])
 
     def model_comparison_cheops(self,show_detrend=True,**kwargs):
-        # For each filekey with a transiting planet, we can perform an equivalent fit with _No_ transit. 
+        """
+        # For each filekey with a transiting planet, this perform an equivalent fit with _No_ transit. 
         # This will then allow us to derive a Bayes Factor and assess whether the transit model is justified.
+        """
         self.model_comp={}
         self.comp_stats={}
         self.cheops_assess_statements={}
@@ -1328,7 +1434,9 @@ class chexo_model():
             elif np.any(self.lcs["cheops"][(self.lcs["cheops"]['filekey']==fk)&(~self.lcs["cheops"]['in_trans_all'])]):
                 print("No transit event during observation with fk ="+fk)
                 self.cheops_assess_statements[fk]=["There appears to be no transit event during observation with fk ="+fk+" according to ephemeris."]
+    
     def init_ttvs(self,**kwargs):
+        """Initialise a model which uses the exoplanet TTVOrbit, which requires the integer of transit past t0."""
         self.init_transit_times={}
         self.init_transit_inds={}
         for pl in self.planets:
@@ -1350,7 +1458,24 @@ class chexo_model():
             
 
     def init_model(self, **kwargs):
-        """Initialising full TESS+CHEOPS model
+        """Initialising full TESS+CHEOPS model.
+        Important global inputs include:
+        - assume_circ - bool - Assume circular orbits (no ecc & omega)? Default: False
+        - timing_sd_durs - timing_sd_durs - float - The standard deviation to use (in units of transit duration) when setting out timing priors. Default: 0.33
+        - fit_ttvs - bool - Fit a TTVorbit exoplanet model which searches for TTVs. Default: False
+        - split_periods - dict - Fit for multiple split periods. Input must be None or a dict matching mod.planets with grouped indexes for those transits to group. Default: None
+        - ttv_prior - str - What prior to have for individual transit times. Possibilities: "Normal","Uniform","BoundNormal". Default: 'Normal'
+        - fit_phi_gp - bool - co-fit a GP to the roll angle. Default: False
+        - fit_phi_spline' - bool - co-fit a spline model to the roll angle. Default: True
+        - spline_bkpt_cad - float - The spline breakpoint cadence in degrees. Default is 9deg. Default: 9.
+        - spline_order - bool - Thespline order. Defaults to 3 (cubic). Default: 3
+        - phi_model_type - bool - How to fit the same roll angle GP trend. Either "individual" (different model for each visit), "common" (same model for each visit), or "split_2" (different models for each N season); formerly common_phi_model. Default: 'common'
+        - ecc_prior - str - 'uniform', 'kipping' or 'vaneylen'. If 'auto' we decide based on multiplicity. Default: 'auto'
+        - spar_param - str - The stellar parameter to use when modelling. Either Mstar, logg or rhostar. Default: 'Mstar'
+        - spar_prior - str - The prior to use on the second stellar parameter. Either constr, loose of logloose. Default: 'constr'
+        - constrain_lds - bool - Use constrained LDs from model or unconstrained? Default: True
+        - ld_mult - float - How much to multiply theoretical LD param uncertainties. Default: 3
+        - fit_contam - bool - Fit for "second light" (i.e. a binary or planet+blend). Default: False
 
         """
 
@@ -1668,8 +1793,9 @@ class chexo_model():
                         self.model_params[scope+'_logs']=pm.Interpolated(scope+'_logs',x_points=np.linspace(minmax[scope+'_logs'][0],minmax[scope+'_logs'][1],201)[1::2],
                                                 pdf_points=np.histogram(self.oot_gp_trace[scope+'_logs'],np.linspace(minmax[scope+'_logs'][0],minmax[scope+'_logs'][1],101))[0]
                                                 )    
-                    else:
-                        self.model_params[scope+'_logs'] = pm.Normal(scope+'_logs', mu=np.log(np.nanmedian(abs(np.diff(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux'].values)))), sd=3)
+                    #Already defined below:
+                    # else:
+                    #    self.model_params[scope+'_logs'] = pm.Normal(scope+'_logs', mu=np.log(np.nanmedian(abs(np.diff(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux'].values)))), sd=3)
 
                 minmax['S0']=np.percentile(self.oot_gp_trace["S0"],[0.5,99.5])
                 self.model_params['phot_S0']=pm.Interpolated("phot_S0",x_points=np.linspace(minmax['S0'][0],minmax['S0'][1],201)[1::2],
@@ -1683,14 +1809,16 @@ class chexo_model():
                                                                         w0=self.model_params['phot_w0'], Q=1/np.sqrt(2))#, mean = phot_mean)
 
                 for scope in self.lcs:
-                    minmax[scope+"_mean"]=np.percentile(self.oot_gp_trace[scope+"_mean"],[0.5,99.5])
-                    self.model_params[scope+'_mean']=pm.Interpolated(scope+"_mean",
-                                            x_points=np.linspace(minmax[scope+'_mean'][0],minmax[scope+'_mean'][1],201)[1::2],
-                                            pdf_points=np.histogram(self.oot_gp_trace[scope+'_mean'],np.linspace(minmax[scope+'_mean'][0],minmax[scope+'_mean'][1],101))[0]
-                                            )
-
-                    self.model_params[scope+'_gp'] = celerite2.theano.GaussianProcess(self.model_params['phot_kernel'], self.lc_fit[scope]['time'].values, mean=self.model_params[scope+'_mean'],
-                                                                                      diag=self.lc_fit[scope]['flux_err'].values ** 2 + tt.exp(self.model_params[scope+'_logs'])**2)
+                    if scope=='cheops':
+                        self.model_params[scope+'_logs']=pm.Normal(scope+'_logs', mu=np.log(np.std(self.lc_fit[scope]['flux'].values)), sd=1)
+                    else:
+                        minmax[scope+"_mean"]=np.percentile(self.oot_gp_trace[scope+"_mean"],[0.5,99.5])
+                        self.model_params[scope+'_mean']=pm.Interpolated(scope+"_mean",
+                                                x_points=np.linspace(minmax[scope+'_mean'][0],minmax[scope+'_mean'][1],201)[1::2],
+                                                pdf_points=np.histogram(self.oot_gp_trace[scope+'_mean'],np.linspace(minmax[scope+'_mean'][0],minmax[scope+'_mean'][1],101))[0]
+                                                )
+                        self.model_params[scope+'_gp'] = celerite2.theano.GaussianProcess(self.model_params['phot_kernel'], self.lc_fit[scope]['time'].values, mean=self.model_params[scope+'_mean'],
+                                                                                        diag=self.lc_fit[scope]['flux_err'].values ** 2 + tt.exp(self.model_params[scope+'_logs'])**2)
                 #tt.dot(self.lc_fit_src_index,tt.exp([logs[scope] for scope in logs])
                 #self.model_params['gp_tess'].compute(self.lc_fit['time'].values, , quiet=True)
             else:
@@ -1771,7 +1899,7 @@ class chexo_model():
                         cheops_sigma2s={}
                 elif self.fit_phi_spline:
                     from patsy import dmatrix
-                    self.model_params['spline_model_phi']={}
+                    self.model_params['spline_model']={}
                     if self.phi_model_type=="common":
                         self.lcs["cheops"]['n_phi_model']=np.tile(0,len(self.lcs["cheops"]['time']))
                         # #Fit a single spline to all rollangle data
@@ -1813,12 +1941,11 @@ class chexo_model():
                         #Splitting by filekey
                         self.lcs["cheops"]['n_phi_model']=np.tile(np.nan,len(self.lcs["cheops"]['time']))
                         for nfk,fk in enumerate(self.cheops_filekeys):
-                            self.lcs["cheops"]['n_phi_model'][self.lcs["cheops"]['fliekey']==fk]=nfk
+                            self.lcs["cheops"]['n_phi_model'][self.lcs["cheops"]['filekey']==fk]=nfk
                     #Fitting splines to each time region
                     B={}
                     self.model_params['splines']={}
-                    self.model_params['spline_model_phi']={}
-                    self.model_params['spline_model_time']={}
+                    self.model_params['spline_model']={}
 
                     minmax=(np.min(self.lcs["cheops"]['phi']),np.max(self.lcs["cheops"]['phi']))
                     n_knots=int(np.round((minmax[1]-minmax[0])/self.spline_bkpt_cad))
@@ -1829,24 +1956,22 @@ class chexo_model():
                         spline_index_arr[self.lcs["cheops"]['n_phi_model']==nreg,nreg]=1.0
                         print(np.shape(spline_index_arr[self.lcs["cheops"]['n_phi_model']==nreg,nreg]))
                         ix=(self.lcs["cheops"]['n_phi_model']==nreg)
-                        self.knots_per_model[nreg]=np.quantile(self.lcs["cheops"].loc[ix,'phi'].values,np.linspace(0,1,n_knots))
-                        B[nreg] = dmatrix(
-                            "bs(phi, knots=knots, degree="+str(int(self.spline_order))+", include_intercept=True) - 1",
-                            {"phi": np.sort(self.lcs["cheops"].loc[ix,'phi'].values), "knots": self.knots_per_model[nreg][1:-1]},
-                        )
+                        #self.knots_per_model[nreg]=np.quantile(self.lcs["cheops"].loc[ix,'phi'].values,np.linspace(0,1,n_knots))
+                        B[nreg], self.knots_per_model[nreg] = create_angle_spline_dmatrix(self.lcs["cheops"].loc[ix,'phi'].values, bkpt_cad=self.spline_bkpt_cad)
+                        # B[nreg] = dmatrix(
+                        #     "bs(phi, knots=knots, degree="+str(int(self.spline_order))+", include_intercept=True) - 1",
+                        #     {"phi": np.sort(self.lcs["cheops"].loc[ix,'phi'].values), "knots": self.knots_per_model[nreg][1:-1]},
+                        # )
                         self.model_params['splines'][nreg] = pm.Normal("splines_"+str(nreg), mu=0, sd=np.nanmedian(abs(np.diff(self.lcs["cheops"].loc[ix,'flux'].values))), shape=B[nreg].shape[1],testval=np.random.normal(0,1e-5,B[nreg].shape[1]))
-                        self.model_params['spline_model_phi'][nreg] = pm.Deterministic("spline_model_phi_"+str(nreg), pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg].T))
+                        self.model_params['spline_model'][nreg] = pm.Deterministic("spline_model_"+str(nreg), pm.math.dot(B[nreg], self.model_params['splines'][nreg].T))
                         
                         #Simply indexing the spline flux from the above models for each filekey (and for all the)
                         for fk in pd.unique(self.lcs["cheops"].loc[self.lcs["cheops"]['n_phi_model']==nreg,'filekey']):
                             fkix=ix&(self.lcs["cheops"]['filekey'].values==fk)
-                            fk_argsort=np.argsort(self.lcs["cheops"].loc[fkix,'phi'].values)
                             minmax=[np.min(self.lcs["cheops"].loc[fkix,'phi'].values),np.max(self.lcs["cheops"].loc[fkix,'phi'].values)]
-                            self.model_params['spline_model_phi'][fk] = pm.Deterministic("spline_model_phi_"+str(fk), 
-                                                                                         self.model_params['spline_model_phi'][nreg][(self.lcs["cheops"].loc[ix,'filekey'].values==fk)[np.argsort(self.lcs["cheops"].loc[ix,'phi'])]])
-                            self.model_params['spline_model_time'][fk] = pm.Deterministic("spline_model_time_"+str(fk), 
-                                                                                          self.model_params['spline_model_phi'][fk][np.argsort(np.argsort(self.lcs["cheops"].loc[fkix,'phi'].values))])
-                            tt.printing.Print(str(fk))(self.model_params['spline_model_phi'][nreg][fk_argsort])
+                            self.model_params['spline_model'][fk] = pm.Deterministic("spline_model_"+str(fk), 
+                                                                                          self.model_params['spline_model'][nreg][(self.lcs["cheops"].loc[ix,'filekey'].values==fk)&self.lcs['cheops'].loc[ix,'mask'].values])
+                            tt.printing.Print(str(fk))(self.model_params['spline_model'][nreg])
                             print(fk,"flux",self.lcs["cheops"].loc[fkix,'flux'].values)
                             print(fk,"time",self.lcs["cheops"].loc[fkix,'time'].values)
                             print(fk,"sort phi",np.sort(self.lcs["cheops"].loc[fkix,'phi'].values))
@@ -1859,14 +1984,13 @@ class chexo_model():
                         tt.printing.Print(str(nreg)+" dot prod")(pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg].T))
                     print(spline_index_arr[np.argsort(self.lcs["cheops"]['phi'].values),:])
                     tt.printing.Print("stacked")(tt.concatenate([pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg].T) for nreg in pd.unique(self.lcs["cheops"]['n_phi_model'])]))
-                    self.model_params['spline_model_allphi'] = pm.Deterministic("spline_model_allphi", tt.sum(tt.concatenate([pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg]) for nreg in pd.unique(self.lcs["cheops"]['n_phi_model'])])*spline_index_arr[np.argsort(self.lcs["cheops"]['phi'].values),:].T,axis=0))
-                    tt.printing.Print("spline_model_allphi")(self.model_params['spline_model_allphi'])
-                    self.model_params['spline_model_alltime'] = pm.Deterministic("spline_model_alltime", self.model_params['spline_model_allphi'][np.argsort(np.argsort(self.lcs["cheops"]['phi'].values))])
+                    self.model_params['spline_model_alltime'] = pm.Deterministic("spline_model_alltime", tt.sum(tt.concatenate([pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg]) for nreg in pd.unique(self.lcs["cheops"]['n_phi_model'])])*spline_index_arr.T,axis=0))
+                    tt.printing.Print("spline_model_alltime")(self.model_params['spline_model_alltime'])
 
                     cheops_sigma2s={}
                 else:
                     cheops_sigma2s={}
-            
+                
                 #in the full model, we do a full cheops planet model for all filekeys simultaneously (unlike for the cheops_only_model)
                 self.model_params['cheops_planets_x'] = {}
                 self.model_params['cheops_planets_gaps'] = {}
@@ -1945,7 +2069,7 @@ class chexo_model():
                     else:
                         cheops_sigma2s[fk] = self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux_err'].values ** 2 + tt.exp(self.model_params['cheops_logs'])**2
                         if self.fit_phi_spline:
-                            self.model_params['llk_cheops'][fk] = pm.Normal("llk_cheops_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['spline_model_phi'][fk][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting']], 
+                            self.model_params['llk_cheops'][fk] = pm.Normal("llk_cheops_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['spline_model'][fk], 
                                                                             sd=tt.sqrt(cheops_sigma2s[fk]), observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
                         if self.fit_phi_gp and self.phi_model_type in ["common","split"] and len(self.cheops_filekeys)>1:
                             self.model_params['llk_cheops'][fk] = pm.Normal("llk_cheops_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['gp_rollangle_model_phi'][fk][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting']], 
@@ -2300,8 +2424,13 @@ class chexo_model():
                                     start=self.ttv_init_soln, target_accept=0.8, **kwargs)#**kwargs)
             self.save_trace_summary(trace=self.ttv_trace,suffix="_ttvfit",returndf=False)
 
-
+        self.model_comp["ttv"]['wttv_waic']=pm.stats.waic(self.ttv_trace)
+        self.model_comp["ttv"]['no_ttv_waic']=pm.stats.waic(self.trace)
+        self.model_comp["ttv"]['deltaWAIC']=self.model_comp["ttv"]['wttv_waic']-self.model_comp["ttv"]['no_ttv_waic']
+        self.model_comp["ttv"]['WAIC_pref_model']="ttvs" if self.model_comp["ttv"]['deltaWAIC']>0 else "no_ttvs"
+                  
     def save_trace_summary(self, trace=None, suffix="", returndf=True):
+        """Make a csv of the PyMC3 model """
         trace=self.trace if trace==None else trace
         assert not (suffix=="" and trace is None), "If you're using a non-standard trace, please include a distinct file suffix."
 
@@ -2340,9 +2469,9 @@ class chexo_model():
             floored_orbs=np.floor(dur)*(98.77/1440)
             if hasattr(self,'trace'):
                 if 'gp_rollangle_model_phi_'+str(fk) in self.trace.varnames:
-                    fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],axis=0)
-                elif 'spline_model_phi_'+str(fk) in self.trace.varnames:
-                    fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['spline_model_phi_'+str(fk)][:,self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],axis=0)
+                    fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.cheops_fk_mask[fk]],axis=0)
+                elif 'spline_model_'+str(fk) in self.trace.varnames:
+                    fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['spline_model_'+str(fk)][:,self.cheops_fk_mask[fk]],axis=0)
                 else:
                     fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)],axis=0)
 
@@ -2351,9 +2480,9 @@ class chexo_model():
                 if 'gp_rollangle_model_phi_'+str(fk) in self.init_soln:
                     print(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
-                elif 'spline_model_phi_'+str(fk) in self.init_soln:
+                elif 'spline_model_'+str(fk) in self.init_soln:
                     print(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
-                    fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['spline_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
+                    fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['spline_model_'+str(fk)][self.cheops_fk_mask[fk]]
                 else:
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.lcs["cheops"]['filekey']==fk] for pl in self.planets]),axis=0)
             starts+=[lcfk['time'].values[0]]
@@ -2478,10 +2607,10 @@ class chexo_model():
             elif self.fit_phi_spline:
                 if hasattr(self,'trace'):
                     for p in self.percentiles:
-                        self.models_out['cheops']['cheops_pred_spline_'+p]=np.hstack([np.nanpercentile(self.trace['spline_model_phi_'+str(fk)][:,self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+                        self.models_out['cheops']['cheops_pred_spline_'+p]=np.hstack([np.nanpercentile(self.trace['spline_model_'+str(fk)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
                         #fkmod=np.nanmedian(self.trace['cheops_summodel_x_'+str(fk)]+self.trace['spline_model_phi_'+str(fk)][:,self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],axis=0)
                 elif hasattr(self,'init_soln'):
-                    self.models_out['cheops']['cheops_pred_spline_med']=np.hstack([self.init_soln['spline_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
+                    self.models_out['cheops']['cheops_pred_spline_med']=np.hstack([self.init_soln['spline_model_'+str(fk)] for fk in self.cheops_filekeys])
             if hasattr(self,'cheops_gap_timeseries'):
                 self.models_out['cheops_gap_models_out']['time']=self.cheops_gap_timeseries
             if hasattr(self,'cheops_gap_fks'):
@@ -2493,7 +2622,7 @@ class chexo_model():
                         self.models_out['cheops']['cheops_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['gp_rollangle_model_phi_'+str(fk)][:,self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
 
                     elif self.fit_phi_spline:
-                        self.models_out['cheops']['cheops_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['spline_model_phi_'+str(fk)][:,self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
+                        self.models_out['cheops']['cheops_alldetrend_'+p]=np.hstack([np.nanpercentile(self.trace['cheops_flux_cor_'+fk]+self.trace['spline_model_'+str(fk)],self.percentiles[p],axis=0) for fk in self.cheops_filekeys])
                     
                     for npl,pl in enumerate(self.planets):
                         if 'cheops_planets_x' in self.trace.varnames:
@@ -2515,7 +2644,7 @@ class chexo_model():
                     self.models_out['cheops']['cheops_alldetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk]+self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
 
                 elif self.fit_phi_spline:
-                    self.models_out['cheops']['cheops_alldetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk]+self.init_soln['spline_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)] for fk in self.cheops_filekeys])
+                    self.models_out['cheops']['cheops_alldetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk]+self.init_soln['spline_model_'+str(fk)] for fk in self.cheops_filekeys])
                 for npl,pl in enumerate(self.planets):
                     if 'cheops_planets_x' in self.init_soln:
                         self.models_out['cheops']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_x'][self.lcs["cheops"]['mask'],npl]
@@ -2563,6 +2692,7 @@ class chexo_model():
    #cheops_planets_x
 
     def make_rv_timeseries(self,**kwargs):
+        """Make the RV model timeseries"""
 
         if not hasattr(self,'models_out'):
             self.models_out={}
@@ -2742,7 +2872,6 @@ class chexo_model():
                 tab+=[['rollangle_logpower',"${\\rm GP}_{\\rm CHEOPS}$, $\log{\\rm power}$","","normal",-6,1]]
                 tab+=[['rollangle_logw0',"${\\rm GP}_{\\rm CHEOPS}$, $\log{\\rm \\omega_0}$","","normal",np.log((2*np.pi)/100),1]]
             elif self.fit_phi_spline:
-                from patsy import dmatrix
                 if self.phi_model_type in ["common","split"]:
                     #Fit a single spline to all rollangle data
                     minmax=(np.min(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi']),np.max(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi']))
@@ -2792,6 +2921,7 @@ class chexo_model():
             f.write('\n'.join(table))
 
     def make_timeseries(self, overwrite=False, **kwargs):
+        """Make the model timeseries dictionaries for all input data - photometry & RVs"""
         #assert hasattr(self,'trace'), "Must have run an MCMC"
         
         if not hasattr(self,'models_out'):
@@ -2805,11 +2935,15 @@ class chexo_model():
         if hasattr(self,'rvs') and ('rvs' not in self.models_out or overwrite):
             self.make_rv_timeseries(overwrite=overwrite,**kwargs)
 
-    def save_timeseries(self,**kwargs):
+    def save_timeseries(self,outfile=None,**kwargs):
+        """Save the model timeseries to a csv file"""
         self.make_timeseries(**kwargs)
         for mod in self.models_out:
             if mod is not None:
-                self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+mod+"_timeseries.csv"))
+                if outfile is None:
+                    self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+mod+"_timeseries.csv"))
+                else:
+                    self.models_out[mod].to_csv(outfile)
     
     def check_rollangle_gp(self, make_change=True, **kwargs):
         """Checking now that the model is initialised whether the rollangle GP improves the loglik or not.
@@ -2845,7 +2979,7 @@ class chexo_model():
                                         np.hstack([self.init_soln['cheops_summodel_x_'+fk] for fk in self.cheops_filekeys])) ** 2 / \
                                         cheops_sigma2s + np.log(cheops_sigma2s))
         llk_cheops_wspline = -0.5 * np.sum((self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux'].values - \
-                                        np.hstack([self.init_soln['cheops_summodel_x_'+fk]+self.init_soln['spline_model_phi_'+fk][self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'mask']] for fk in self.cheops_filekeys])) ** 2 / \
+                                        np.hstack([self.init_soln['cheops_summodel_x_'+fk]+self.init_soln['spline_model_'+fk] for fk in self.cheops_filekeys])) ** 2 / \
                                         cheops_sigma2s + np.log(cheops_sigma2s))
         #lower BIC values are generally preferred.
         #So (deltabic_wspline - deltabic_nospline)<0 prefers nospline
@@ -2860,12 +2994,14 @@ class chexo_model():
                         
 
     def print_settings(self):
+        """Print all the global settings"""
         settings=""
         for key in self.defaults:
             settings+=key+"\t\t"+str(getattr(self,key))+"\n"
         print(settings)
 
     def save_trace(self):
+        """Save the PyMC3 trace to file with pickle. Save location default is \'NAME_mcmctrace.pk\'"""
         if not os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"))):
             os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_")))
         pickle.dump(self.trace,open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_mcmctrace.pkl"),"wb"))
@@ -2921,6 +3057,8 @@ class chexo_model():
         #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
 
     def plot_rollangle_model(self,save=True,savetype='png',**kwargs):
+        """Plot the CHEOPS model as a function of rollangle. Works for either spline or GP.
+        """
         
         if not hasattr(self,"models_out") or "cheops" not in self.models_out or (hasattr(self,'trace') and "cheops_lindetrend_+1sig" not in self.models_out["cheops"]):
             self.make_cheops_timeseries(**kwargs)
@@ -3135,6 +3273,8 @@ class chexo_model():
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+save_suffix+"_cheops_plots."+savetype),transparent=transparent)
     
     def init_phot_plot_sects_noprior(self,src,n_gaps=5,typic_dist=15):
+        """
+        Initialising photometric plot without any prior knowledge of the timing of gaps (i.e. not using pre-loaded TESS sector times)"""
         sort_time=np.sort(self.lcs[src].loc[np.isfinite(self.lcs[src]['time'].values),'time'].values)
         diffs=np.diff(sort_time)
         lower_bounds=[np.nanmin(self.lcs[src]['time'])]
@@ -3162,6 +3302,12 @@ class chexo_model():
 
     
     def init_phot_plot_sects(self,src,**kwargs):
+        """
+        Initialise the plotting of photometry
+
+        Args:
+        src (str) - Source of photometry, e.g. 'tess' or 'k2'. 
+        """
         #Getting rough timings for all fields
         from . import tools
         field_df=tools.get_field_times()
@@ -3186,9 +3332,9 @@ class chexo_model():
             #Counts as matching if 1) there is data between start & stop, and 2) there are jumps within ~1d of start/stop
             has_data = np.sum((self.lcs[src]['time']>frow[1]['jd_start'])&(self.lcs[src]['time']<frow[1]['jd_end']))>500
             end_search=abs(frow[1]['jd_end']-ends)
-            end_match = np.min(end_search)<4
+            end_match = np.min(end_search)<6
             start_search=abs(frow[1]['jd_start']-starts)
-            start_match = np.min(start_search)<4
+            start_match = np.min(start_search)<6
             print(frow[1]['jd_start'],frow[1]['jd_end'],ends,starts,np.min(end_search),np.min(start_search))
             if has_data&end_match&start_match:
                 #SECTOR MATCH
@@ -3201,8 +3347,10 @@ class chexo_model():
         return sectinfo
 
     def init_phot_plot(self, src, overwrite=False, **kwargs):
+        """
         #Initialising photometric plot info - i.e. flux and planet models from either 
         #We want per-sector arrays which match time[mask]
+        """
         #print(self.models_out.keys(),not hasattr(self,"models_out"), not (src in self.models_out), hasattr(self,'trace'), src+"_allplmodel_+1sig" not in self.models_out[src].columns, overwrite)
         if not hasattr(self,"models_out") or not (src in self.models_out) or (hasattr(self,'trace') and src+"_allplmodel_+1sig" not in self.models_out[src].columns) or overwrite:
             #Either no saved timeseries at all, or no specific timeseries for this source, or we now have a trace but the saved timeseries have not been updated (no +/-1 sigma regions)
