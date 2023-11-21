@@ -208,7 +208,7 @@ class chexo_model():
 
         assert these_cheops_obs.shape[0]>0, "No matches found in the CHEOPS database. Are you logged in via your .dacerc file?"
         for fk in these_cheops_obs['file_key'].values:
-            if "V0200" in fk and fk.replace("V0200","V0300") in these_cheops_obs['file_key'].values:
+            if "V020" in fk and fk.replace("V020","V030") in these_cheops_obs['file_key'].values:
                 #Skipping if there's a better/newer reduction available.
                 continue
             t_obs=Time(these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'date_mjd_start'].values,format='mjd').jd
@@ -463,7 +463,7 @@ class chexo_model():
                     n_attempts+=1
             assert os.path.isdir(os.path.join(out_dir,filekey)), "Unable to download filekey "+filekey+" using Dace."
         
-        if fileloc is None and download and PIPE:
+        if PIPE and ((fileloc is None) or (os.path.isdir(fileloc))) :
             fileloc = self.run_PIPE(out_dir, filekey, mag, **kwargs)
             print("fileloc=",fileloc)
 
@@ -481,7 +481,7 @@ class chexo_model():
             v3list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-*V0300.fits"))
             if len(v3list)==0:
                 #No V0300 - need to use 
-                v2list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits"))
+                v2list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V020.fits"))
                 assert len(v2list)>0, "Either V0200 and V0300 lightcurve files must be found within "+os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits")
                 fileloc = v2list[0]
             else:
