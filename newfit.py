@@ -19,13 +19,14 @@ import seaborn as sns
 
 import warnings
 warnings.filterwarnings("ignore")
+
+#Setting up logging - INFO level stuff to console and DEBUG level stuff to file:
 import logging 
-logging.getLogger("filelock").setLevel(logging.ERROR)
-logging.getLogger("theano").setLevel(logging.ERROR)
-logging.getLogger("matplotlib").setLevel(logging.ERROR)
+# logging.getLogger("filelock").setLevel(logging.ERROR)
+# logging.getLogger("theano").setLevel(logging.ERROR)
+# logging.getLogger("matplotlib").setLevel(logging.ERROR)
 
 import sys
-print(sys.path)
 floattype=np.float64
 tablepath = os.path.join(os.path.dirname(__file__),'tables')
 
@@ -43,7 +44,7 @@ from .tools import *
 class chexo_model():
     """Fit Cheops with Exoplanet core model class"""
 
-    def __init__(self, targetname, overwrite=True, radec=None, comment=None, **kwargs):
+    def __init__(self, targetname, overwrite=True, radec=None, comment="", **kwargs):
         """Initialising chexo_model.
 
         Args:
@@ -73,6 +74,7 @@ class chexo_model():
                        'signif_thresh':1.25,    # Threshold for detrending parameters in sigma
                        'use_multinest':False,   # use_multinest - bool - currently not supported
                        'use_pymc3':True,        # use_pymc3 - bool
+                       'use_PIPE':True,         # use_PIPE - bool
                        'assume_circ':False,     # assume_circ - bool - Assume circular orbits (no ecc & omega)?
                        'timing_sd_durs':0.33,   # timing_sd_durs - float - The standard deviation to use (in units of transit duration) when setting out timing priors
                        'fit_ttvs':False,        # Fit a TTVorbit exoplanet model which searches for TTVs
@@ -113,8 +115,55 @@ class chexo_model():
                 self.load_model_from_file(loadfile=self.save_file_loc)
             except:
                 self.load_from_file = False
+        #Setting up logging
+        self.init_logging()
 
         self.percentiles={'-2sig':2.2750132, '-1sig':15.8655254, 'med':50., '+1sig':84.1344746, '+2sig':97.7249868}
+    
+    def update(self,**kwargs):
+        """Update global parameters
+        """
+        #Updating settings
+        for param in kwargs:
+            if param in self.defaults:
+                setattr(self,param,kwargs[param])
+        if self.save_file_loc is None:
+            self.save_file_loc=os.path.dirname(os.path.abspath(__file__))
+        if not os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"))):
+            os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_")))
+        if not os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"),'logs')):
+            os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"logs"))
+        bools=['debug','load_from_file','fit_gp','fit_flat','train_gp','cut_oot','bin_oot','pred_all','use_bayes_fact','use_signif',
+               'use_multinest','use_pymc3','assume_circ','fit_ttvs','fit_phi_gp','fit_phi_spline',
+               'constrain_lds','fit_contam','tight_depth_prior']
+        boolstr=''
+        for i in bools:
+            boolstr+=str(int(getattr(self,i)))
+            
+        nonbools=['flat_knotdist','cut_distance','mask_distance','bin_size','signif_thresh','ecc_prior','npoly_rv','ld_mult','timing_sd_durs','rv_mass_prior','spline_order','spline_bkpt_cad','phi_model_type','spar_param','spar_prior']
+        nonboolstrs=[]
+        for i in nonbools:
+            nonboolstrs+=[str(getattr(self,i)) if len(str(getattr(self,i)))<5 else str(getattr(self,i))[:5]]
+        comm="" if self.comment is None else "_"+self.comment
+        self.unq_name=self.name.replace(" ","_")+"_"+date.today().strftime("%Y%m%d")+"_"+str(int(boolstr, 2))+"_"+"_".join(nonboolstrs)+comm
+
+    def init_logging(self):
+        self.logger = logging.getLogger(__name__)
+        logFormatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
+
+        consoleHandler = logging.StreamHandler()
+        consoleHandler.setLevel(logging.INFO)
+        consoleHandler.setFormatter(logFormatter)
+        self.logger.addHandler(consoleHandler)
+
+        fileHandler = logging.FileHandler(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"logs",self.comment.replace(" ","_")+"_model.log"))
+        fileHandler.setLevel(logging.DEBUG)
+        fileHandler.setFormatter(logFormatter)
+        self.logger.addHandler(fileHandler)
+        
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.info("Initialised logger")
+        self.logger.debug("Checking if logger prints to file or stream")
 
     def get_tess(self,tic=None,**kwargs):
         """Automatically download archival photometric (i.e. TESS) data using MonoTools.lightcurve
@@ -144,7 +193,7 @@ class chexo_model():
         all_missions=np.unique([cad.split("_")[0] for cad in self.monotools_lc.cadence_list])
         misss=np.array([c[:2] for c in self.monotools_lc.cadence])
         for unq_miss_id in all_missions:
-            print(unq_miss_id)
+            self.logger.info("Lightcurves found with mission ID:"+unq_miss_id)
             cad_ix=(self.monotools_lc.mask)&(misss==unq_miss_id)
             self.add_lc(self.monotools_lc.time[cad_ix]+2457000,self.monotools_lc.flux[cad_ix],self.monotools_lc.flux_err[cad_ix],source=lc_dic_flipped[unq_miss_id])
 
@@ -166,61 +215,68 @@ class chexo_model():
         n_try=0
         while n_try<3 and len(these_cheops_obs)==0:
             if n_try>0:
-                print("DACE non-responsive... waiting 15secs. (NB - try logging in on DACE)")
+                self.logger.warning("DACE non-responsive... waiting 15secs. (NB - try logging in on DACE)")
                 time.sleep(15)
             try:
                 from dace_query.cheops import Cheops
             except:
                 raise ImportError("Cannot import Dace. Check it is installed, or initialise the class with `get_cheops=False` and add a lightcurve with `mod.add_cheops_lc`")
+            self.logger.debug("Attempting to get objects via the catalogue name")
+            these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"obj_id_catname":{"equal":[catname]},"file_key":{"contains":"_V030"}}))
             try:
-                these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"obj_id_catname":{"equal":[catname]},"file_key":{"contains":"_V030"}}))
-                print(type(these_cheops_obs),these_cheops_obs.shape,len(these_cheops_obs))
                 if len(these_cheops_obs)==0:
                     from dace_query.cheops import Cheops
                     raise ValueError("No objects returned for name="+catname)
-                elif hasattr(self,'radec'):
+                if hasattr(self,'radec'):
                     obs_radecs=SkyCoord([rd.split(" / ")[0] for rd in these_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
                                         [rd.split(" / ")[1] for rd in these_cheops_obs['obj_pos_coordinates_hms_dms'].values],
                                         unit=(u.hourangle,u.deg))
+                    self.logger.debug("Checking separation between object in Dace catalogue and target RA/Dec "+str(self.radec.ra.deg)+" "+str(self.radec.dec.deg))
                     assert np.all(self.radec.separation(obs_radecs).arcsec<distthresh), "The RA/DEC of CHEOPS visits does not match the Ra/DEC included above"
             except:
+                self.logger.debug("Zero entries found when searching by name. Trying with coordinate")
                 assert hasattr(self,'radec'), "If indexing by name does not work, we must have an RA/Dec coordinate"
                 #Could not get it using the name, trying with the programme and the coordinates
                 if n_prog is not None:
+                    self.logger.debug("Limiting search via programme ID; "+str(n_prog))
                     all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"prog_id":{"contains":str(int(n_prog))},"file_key":{"contains":"_V030"}}))
                 else:
                     #Getting all data/all programmes
                     all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"prog_id":{"contains":"CHEOPS"},"file_key":{"contains":"_V030"}}))
                 #Finding which target we have:
-                print(all_cheops_obs)
+                self.logger.debug("All CHEOPS observations found:")
+                self.logger.debug(all_cheops_obs)
                 all_radecs=SkyCoord([rd.split(" / ")[0] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
                                     [rd.split(" / ")[1] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values],
                                     unit=(u.hourangle,u.deg))
                 these_cheops_obs=all_cheops_obs.loc[self.radec.separation(all_radecs).arcsec<distthresh]
-                print(np.min(self.radec.separation(all_radecs).arcsec), these_cheops_obs)
+                self.logger.debug("Minimum CHEOPS object distance: "+str(np.min(self.radec.separation(all_radecs).arcsec))+" | new nearby objs:")
+                self.logger.debug(all_cheops_obs)
             n_try+=1
 
         #print(these_cheops_obs['file_key'].values)
         if fks is not None:
             fks=[f.replace("CH_","") for f in fks]
             these_cheops_obs=these_cheops_obs.loc[np.array([f.replace("CH_","") in fks for f in these_cheops_obs['file_key'].values])]
+            self.logger.debug("filtering by pre-set filekeys: "+",".join(fks))
         #print(these_cheops_obs['file_key'].values)
 
         assert these_cheops_obs.shape[0]>0, "No matches found in the CHEOPS database. Are you logged in via your .dacerc file?"
         for fk in these_cheops_obs['file_key'].values:
             if "V020" in fk and fk.replace("V020","V030") in these_cheops_obs['file_key'].values:
-                #Skipping if there's a better/newer reduction available.
+                self.logger.debug("Skipping "+fk+" as there's a better/newer reduction available.")
                 continue
             t_obs=Time(these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'date_mjd_start'].values,format='mjd').jd
             if (end_date is not None and t_obs<end_date) or (start_date is not None and t_obs>start_date):
-                #Skipping if the observation is not within the start/end date...
+                self.logger.debug("Skipping "+fk+" as the observation is not within the start/end date: "+str(start_date)+"-"+str(end_date))
                 continue
             
             ifk=fk[3:] if fk[:3]=="CH_" else fk
             if hasattr(self,'monotools_lc'):
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE,
-                                   mag=self.monotools_lc.all_ids['tess']['data']['GAIAmag'], **kwargs)
+                self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from MonoTools file")
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE, mag=self.monotools_lc.all_ids['tess']['data']['GAIAmag'], **kwargs)
             else:
+                self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from Dace catalogue")
                 self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE,
                                    mag=these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'obj_mag_v'], **kwargs)
                                    #self.monotools_lc.all_ids['tess']['data'][`'GAIAmag']
@@ -247,38 +303,15 @@ class chexo_model():
     def get_TOI(self):
         """Get TOI info. We either download the TOI catalogue from ExoFop, or if this was recently accessed, we load the TOI catalogue from the data/tables folder in cheoxplanet"""
         round_date=int(np.round(Time.now().jd,-1))
+        
         if not os.path.exists(os.path.join(tablepath,"TOI_tab_jd_"+str(round_date)+".csv")):
+            self.logger.debug("Downloading TOI catalogue from ExoFop")
             self.toi_cat=pd.read_csv("https://exofop.ipac.caltech.edu/tess/download_toi.php?sort=toi&output=csv")
             self.toi_cat['star_TOI']=self.toi_cat['TOI'].values.astype(int)
             self.toi_cat.to_csv(os.path.join(tablepath,"TOI_tab_jd_"+str(round_date)+".csv"))
         else:
+            self.logger.debug("Accessing recent TOI catalogue from file (round date="+str(round_date)+")")
             self.toi_cat=pd.read_csv(os.path.join(tablepath,"TOI_tab_jd_"+str(round_date)+".csv"),index_col=0)
-
-    def update(self,**kwargs):
-        """Update global parameters
-        """
-        #Updating settings
-        for param in kwargs:
-            if param in self.defaults:
-                setattr(self,param,kwargs[param])
-        if self.save_file_loc is None:
-            self.save_file_loc=os.path.dirname(os.path.abspath(__file__))
-        if not os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"))):
-            os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_")))
-        bools=['debug','load_from_file','fit_gp','fit_flat','train_gp','cut_oot','bin_oot','pred_all','use_bayes_fact','use_signif',
-               'use_multinest','use_pymc3','assume_circ','fit_ttvs','fit_phi_gp','fit_phi_spline',
-               'constrain_lds','fit_contam','tight_depth_prior']
-        boolstr=''
-        for i in bools:
-            boolstr+=str(int(getattr(self,i)))
-            
-        nonbools=['flat_knotdist','cut_distance','mask_distance','bin_size','signif_thresh','ecc_prior','npoly_rv','ld_mult','timing_sd_durs','rv_mass_prior','spline_order','spline_bkpt_cad','phi_model_type','spar_param','spar_prior']
-        nonboolstrs=[]
-        for i in nonbools:
-            nonboolstrs+=[str(getattr(self,i)) if len(str(getattr(self,i)))<5 else str(getattr(self,i))[:5]]
-        comm="" if self.comment is None else "_"+self.comment
-        self.unq_name=self.name.replace(" ","_")+"_"+date.today().strftime("%Y%m%d")+"_"+str(int(boolstr, 2))+"_"+"_".join(nonboolstrs)+comm
-
 
     def add_lc(self, time, flux, flux_err, mask=None, source='tess'):
         """Add photometric lightcurve to the model.
@@ -289,10 +322,11 @@ class chexo_model():
         flux_err - np.array - Flux errors in ppt """
         if not hasattr(self,'lcs'):
             self.lcs={}
+        self.logger.debug("Adding lightcurve to file from time,flux,flux_error")
         self.lcs[source]=pd.DataFrame({'time':time,'flux':flux,'flux_err':flux_err})
         self.lcs[source]['mask']=np.tile(True,len(time)) if mask is None else mask
 
-    def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,**kwargs):
+    def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,optimise_klim=True,**kwargs):
         """
          Run Pipe to extract PSFs. This is a wrapper around the : py : func : ` ~psf. pipeline. PipeParam ` class and it's subarray extraction function
          
@@ -303,9 +337,11 @@ class chexo_model():
          	 overwrite: Whether to overwrite the files or not. If True they will be overwritten
              make_psf: Use PIPE to make a specific PSF for this target (long)
              binary: Whether there is a nearby contaminant within the PSF that we want to model using the BG-star-fits
+             optimise_klim: Whether to optimise PIPE
          Returns: 
          	 A list of : py : class : ` ~psf. pipeline. PipelineParam `
         """
+        self.logger.debug("Running PIPE on filekey "+fk)
         try:
             from pipe import PipeParam, PipeControl, config
         except:
@@ -314,7 +350,7 @@ class chexo_model():
         mag=10.5 if mag is None else mag
 
         out_dir=os.path.join(self.save_file_loc,self.name.replace(" ","_"))
-        print(out_dir,config.get_conf_paths())
+        self.logger.debug(["PIPE data location:",out_dir,config.get_conf_paths()])
         pipe_refdataloc=config.get_conf_paths()[1]
         
         # folds = glob.glob(os.path.join(out_dir,fk,"Outdata","000??"))
@@ -324,6 +360,7 @@ class chexo_model():
         #Checking if we have an Outdata file but no PIPE outputs (in which case we delete)
         #print(os.path.exists(os.path.join(out_dir,fk,"Outdata")),os.path.join(out_dir,fk,"Outdata"),overwrite)
         if (os.path.exists(os.path.join(out_dir,fk,"Outdata","00000")) and len(glob.glob(os.path.join(out_dir,fk,"Outdata","00000","*.fits")))==0) or overwrite:
+            self.logger.debug("Overwriting stored PIPE data as either overwrite=True or no fits files generated in previous PIPE run. Filekey="+fk)
             os.system("rm -r "+os.path.join(out_dir,fk,"Outdata"))
         #print(os.path.exists(os.path.join(out_dir,fk,"Outdata")),os.path.join(out_dir,fk,"Outdata"),overwrite)
         if not os.path.exists(os.path.join(out_dir,fk,"Outdata")) or overwrite:
@@ -331,7 +368,7 @@ class chexo_model():
             #os.system("mkdir "+os.path.join(out_dir,fk,"Outdata","00000"))
             #Running PIPE:
             from pipe import PipeParam, PipeControl
-            print(self.name.replace(" ","_"), fk,os.path.join(out_dir,fk,"Outdata","00000"), os.path.join(out_dir,fk))
+            self.logger.debug("PIPE file locations"+self.name.replace(" ","_")+fk+os.path.join(out_dir,fk,"Outdata","00000")+os.path.join(out_dir,fk))
             pps = PipeParam(self.name.replace(" ","_"), fk, 
                             outdir=os.path.join(out_dir,fk,"Outdata","00000"),
                             datapath=os.path.join(out_dir,fk))
@@ -348,15 +385,21 @@ class chexo_model():
             #pps.remove_static = True
             #pps.save_static = False
             #pps.static_psf_rad = False
-            pps.sa_optimise = False
+            pps.im_optimise = optimise_klim
             #pps.smear_fact = 5.5
             pps.psf_score = None
             pps.psf_min_num = 12
             pps.cti_corr = True
             #pps.smear_resid = False
             #pps.smear_resid_sa = True
-            #pps.non_lin_tweak = True
-            pps.klip = 1
+            pps.non_lin_tweak = True
+            if optimise_klim:
+                pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                self.logger.debug("Setting number of klip models to test from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
+            else:
+                self.logger.debug("Setting klip from magnitude."+str(pps.klip)+". Filekey="+fk)
+                pps.klip = int(np.clip(2.5**(12-mag),1,10))
             #pps.sigma_clip = 15
             #pps.empiric_noise = True
             #pps.empiric_sigma_clip = 4
@@ -373,6 +416,7 @@ class chexo_model():
             #    #pps.psflib = pipe_refdataloc+"/psf_lib/"+psf_locs[closest_subarr]
             #pc = PipeControl(pps)
             if binary:
+                self.logger.debug("Running PIPE with a binary/companion star. Filekey="+fk)
                 pps.fit_bgstars = False
                 #pps.binary = True
                 #pps.robust_centre_binary = True
@@ -397,6 +441,7 @@ class chexo_model():
         else:
             #Looping through "Outdata" folders - higher number = most recent = best
             # Return the latest folder in out_dir.
+            self.logger.debug("PIPE already been run. Finding most recent to return. Filekey="+fk)
             for folder in np.sort(np.array(glob.glob(os.path.join(out_dir,fk,"Outdata","000*"))))[::-1]:
                 # Returns the name of the file in the folder.
                 if len(glob.glob(os.path.join(folder,self.name.replace(" ","_")+"*_im.fits")))>0:
@@ -408,8 +453,8 @@ class chexo_model():
             raise ValueError("Unable to either run PIPE extractions or return PIPE fits file")
 
 
-    def add_cheops_lc(self, filekey, fileloc=None, download=True, ylims=(-15,15),
-                      DRP=True, PIPE=False, PIPE_bin_src=None, mag=None, **kwargs):
+    def add_cheops_lc(self, filekey, fileloc=None, download=True, ylims=(-15,15), overwrite=False,
+                      DRP=True, use_PIPE=False, PIPE_bin_src=None, mag=None, **kwargs):
         """AI is creating summary for add_cheops_lc
 
         Args:
@@ -417,6 +462,7 @@ class chexo_model():
             fileloc (str, optional): Location of lightcurve fits file
             download (bool, optional): Should we download from DACE?
             ylims (tuple, optional): Limits below/above which to cut (-15,15)
+            overwrite (bool, optional): Whether to refit CHEOPs PIPE extraction
             DRP (bool, optional): Is this a DRP file? Defaults to True.
             PIPE (bool, optional): Is this a PIPE file? Defaults to False.
             PIPE_bin_src (int, optional): If this is a PIPE file with two stars (ie binary model) which should we model? Defaults to None.
@@ -424,12 +470,13 @@ class chexo_model():
         """
 
         filekey=filekey[3:] if filekey[:3]=="CH_" else filekey
-
-        assert filekey not in self.cheops_filekeys, "Duplicated CHEOPS filekeys"
+        self.logger.debug("Adding "+filekey+" CHEOPS lc")
+        self.logger.debug([overwrite,filekey,self.cheops_filekeys])
+        assert overwrite or (filekey not in self.cheops_filekeys), "Duplicated CHEOPS filekeys"
 
         self.update(**kwargs)
 
-        assert DRP^PIPE, "Must have either DRP or PIPE flagged"
+        assert DRP^use_PIPE, "Must have either DRP or PIPE flagged"
         out_dir=os.path.join(self.save_file_loc,self.name.replace(" ","_"))
         
         if fileloc is None and download:
@@ -437,47 +484,54 @@ class chexo_model():
             n_attempts=0
             while not os.path.isdir(os.path.join(out_dir,filekey)) and n_attempts<5:
                 try:
+                    self.logger.debug("Trying to download "+filekey+" from DACE")
                     if not os.path.isdir(os.path.join(out_dir,filekey)):
                         #Downloading Cheops data:
-                        if PIPE:
-                            print("Downloading "+filekey+" with Dace to "+out_dir)
+                        if self.use_PIPE:
+                            self.logger.info("Downloading "+filekey+" with Dace to "+out_dir)
                             Cheops.download('all', {'file_key': {'equal':["CH_"+str(filekey)]}},
                                             output_directory=out_dir, 
                                             output_filename=self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
-                            print("Succeeded downloading "+filekey+" with Dace to "+out_dir+"/"+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
+                            self.logger.info("Succeeded downloading "+filekey+" with Dace to "+out_dir+"/"+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
                         elif DRP:
                             Cheops.download('lightcurves', {'file_key': {'equal':["CH_"+str(filekey)]}},
                                             output_directory=out_dir, output_filename=self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
                         time.sleep(30)
                         os.system("tar -xvf "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz -C '+out_dir)
                         #Deleting it
-                        print("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
+                        self.logger.debug("Command:rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
                         os.system("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz') #Deleting .tar file
-                        print("rm "+out_dir+'/'+filekey+'/*.mp4')
+                        self.logger.debug("Command:rm "+out_dir+'/'+filekey+'/*.mp4')
                         os.system("rm "+out_dir+'/'+filekey+'/*.mp4') #Deleting videos
                 except:
+                    self.logger.debug("Waiting a bit... maybe Dace needs a break? Filekey="+filekey)
                     time.sleep(15)
-                print("new dir exists?",os.path.isdir(os.path.join(out_dir,filekey)))
+                self.logger.debug("new dir exists?"+str(os.path.isdir(os.path.join(out_dir,filekey))))
                 if not os.path.isdir(os.path.join(out_dir,filekey)):
                     time.sleep(15)
                     n_attempts+=1
             assert os.path.isdir(os.path.join(out_dir,filekey)), "Unable to download filekey "+filekey+" using Dace."
         
-        if PIPE and ((fileloc is None) or (os.path.isdir(fileloc))) :
+        if self.use_PIPE and ((fileloc is None) or (os.path.isdir(fileloc)) or overwrite) :
+            self.logger.debug("Running PIPE on "+filekey)
             fileloc = self.run_PIPE(out_dir, filekey, mag, **kwargs)
-            print("fileloc=",fileloc)
+            self.logger.debug("fileloc="+fileloc)
 
         if not hasattr(self,"lcs"):
             self.lcs = {}
         if "cheops" not in self.lcs:
             self.lcs["cheops"] = pd.DataFrame()
         
-        if PIPE:
+        if self.use_PIPE:
             binchar=str(int(PIPE_bin_src)) if PIPE_bin_src is not None else ''
             sources={'time':'BJD_TIME', 'flux':'FLUX'+binchar, 'flux_err':'FLUXERR'+binchar, 
                      'bg':'BG', 'centroidx':'XC'+binchar,'phi':'ROLL', 
                      'centroidy':'YC'+binchar, 'deltaT':'thermFront_2','smear':None}
+            self.logger.debug("Adding PCs from PIPE PC. Filekey="+filekey)
+            
+            sources.update({'U'+str(int(nPC)):'U'+str(int(nPC)) for nPC in range(0,9)})
         elif DRP:
+            self.logger.debug("Getting DRP LCs. Filekey="+filekey)
             v3list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-*V0300.fits"))
             if len(v3list)==0:
                 #No V0300 - need to use 
@@ -485,7 +539,7 @@ class chexo_model():
                 assert len(v2list)>0, "Either V0200 and V0300 lightcurve files must be found within "+os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits")
                 fileloc = v2list[0]
             else:
-                #Need to find the optimal aperture... Using 90th-10h percentile of
+                self.logger.debug("Need to find the optimal aperture... Using 90th-10th percentile of flux to find lowest variability. Filekey="+filekey)
                 v3dic={}
                 lcstats={}
                 aps=[]
@@ -508,34 +562,37 @@ class chexo_model():
         f=fits.open(fileloc)
         iche=pd.DataFrame()
         for s in sources:
+            self.logger.debug("Processing derived data. Source="+str(s)+" Filekey="+filekey)
+
             #print(s,iche.columns)
             if sources[s] is not None:
-                if s=='flux_err' and sources[s] not in f[1].data:
+                if s=='flux_err' and sources[s] not in f[1].data.columns.names:
                     iche[s]=np.sqrt(f[1].data[sources['flux']])
-                else:
+                elif sources[s] in f[1].data.columns.names:
                     iche[s]=f[1].data[sources[s]]
-            if s=='flux':
-                iche['raw_flux']=iche[s].values
-                iche[s]=(iche[s].values/np.nanmedian(f[1].data[sources['flux']])-1)*1000
-            if s=='flux_err':
-                iche['raw_flux_err']=iche[s].values
-                iche[s]=(iche[s].values/np.nanmedian(f[1].data[sources['flux']]))*1000
-            if s=='bg':
-                bgthresh=np.percentile(iche['bg'].values,95)*1.5
-            if s=='phi':
-                if hasattr(self,'radec') and self.radec is not None:
-                    moon_coo = get_body('moon', Time(iche['time'],format='jd',scale='tdb'))
-                    v_moon = np.arccos(
-                            np.cos(moon_coo.ra.radian)*np.cos(moon_coo.dec.radian)*np.cos(self.radec.ra.radian)*np.cos(self.radec.dec.radian) +
-                            np.sin(moon_coo.ra.radian)*np.cos(moon_coo.dec.radian)*np.sin(self.radec.ra.radian)*np.cos(self.radec.dec.radian) +
-                            np.sin(moon_coo.dec.radian)*np.sin(self.radec.dec.radian))
-                    dv_rot = np.degrees(np.arcsin(np.sin(moon_coo.ra.radian-self.radec.ra.radian)*np.cos(moon_coo.dec.radian)/np.sin(v_moon)))
-                    iche['cheops_moon_angle']=(iche[s].values[:]-dv_rot)%360
-                iche[s+"_orig"]=iche[s].values[:]
-                #Performing simple anomaly masking using background limit, nans, and flux outliers:
-                iche['mask']=(~np.isnan(iche['flux']))&(~np.isnan(iche['flux_err']))&cut_anom_diff(iche['flux'].values)&(iche['bg']<bgthresh)&(iche['flux']>ylims[0])&(iche['flux']<ylims[-1])
-                #iche['mask']=cut_high_rollangle_scatter(iche['mask'].values,iche[s].values,iche['flux'].values,iche['raw_flux_err'].values,**kwargs)
-                #iche[s]=roll_rollangles(iche[s].values,mask=iche['mask'])
+            if sources[s] in f[1].data.columns.names:
+                if s=='flux':
+                    iche['raw_flux']=iche[s].values
+                    iche[s]=(iche[s].values/np.nanmedian(f[1].data[sources['flux']])-1)*1000
+                if s=='flux_err':
+                    iche['raw_flux_err']=iche[s].values
+                    iche[s]=(iche[s].values/np.nanmedian(f[1].data[sources['flux']]))*1000
+                if s=='bg':
+                    bgthresh=np.percentile(iche['bg'].values,95)*1.5
+                if s=='phi':
+                    if hasattr(self,'radec') and self.radec is not None:
+                        moon_coo = get_body('moon', Time(iche['time'],format='jd',scale='tdb'))
+                        v_moon = np.arccos(
+                                np.cos(moon_coo.ra.radian)*np.cos(moon_coo.dec.radian)*np.cos(self.radec.ra.radian)*np.cos(self.radec.dec.radian) +
+                                np.sin(moon_coo.ra.radian)*np.cos(moon_coo.dec.radian)*np.sin(self.radec.ra.radian)*np.cos(self.radec.dec.radian) +
+                                np.sin(moon_coo.dec.radian)*np.sin(self.radec.dec.radian))
+                        dv_rot = np.degrees(np.arcsin(np.sin(moon_coo.ra.radian-self.radec.ra.radian)*np.cos(moon_coo.dec.radian)/np.sin(v_moon)))
+                        iche['cheops_moon_angle']=(iche[s].values[:]-dv_rot)%360
+                    iche[s+"_orig"]=iche[s].values[:]
+                    #Performing simple anomaly masking using background limit, nans, and flux outliers:
+                    iche['mask']=(~np.isnan(iche['flux']))&(~np.isnan(iche['flux_err']))&cut_anom_diff(iche['flux'].values)&(iche['bg']<bgthresh)&(iche['flux']>ylims[0])&(iche['flux']<ylims[-1])
+                    #iche['mask']=cut_high_rollangle_scatter(iche['mask'].values,iche[s].values,iche['flux'].values,iche['raw_flux_err'].values,**kwargs)
+                    #iche[s]=roll_rollangles(iche[s].values,mask=iche['mask'])
         iche['xoff']=iche['centroidx']-np.nanmedian(iche['centroidx'])
         iche['yoff']=iche['centroidy']-np.nanmedian(iche['centroidy'])
         iche['phi_sorting']=np.argsort(iche['phi'].values)
@@ -544,9 +601,7 @@ class chexo_model():
         #Getting moon-object angle:
 
         iche['filekey']=np.tile(filekey,len(f[1].data[sources['time']]))
-        
-        
-        
+        self.logger.debug("Applying anomaly mask. Filekey="+filekey)
         iche.loc[iche['mask'],'mask']&=cut_anom_diff(iche['flux'].values[iche['mask']])
         
         iche['mask_phi_sorting']=np.tile(-1,len(iche['mask']))
@@ -554,20 +609,27 @@ class chexo_model():
         iche.loc[iche['mask'],'mask_phi_sorting']=np.argsort(iche.loc[iche['mask'],'phi'].values).astype(int)
         iche.loc[iche['mask'],'mask_time_sorting']=np.argsort(iche.loc[iche['mask'],'mask_phi_sorting'].values)
 
+        if 'filekey' in self.lcs['cheops'].columns and filekey in self.lcs["cheops"]['filekey'] and overwrite:
+            #Removing
+            self.lcs["cheops"]=self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']!=filekey]
+        elif 'filekey' in self.lcs['cheops'].columns and filekey in self.lcs["cheops"]['filekey']:
+            assert "Filekey already in CHEOPS LC - must `overwrite`"
         self.lcs["cheops"]=self.lcs["cheops"].append(iche)
         self.lcs["cheops"]=self.lcs["cheops"].iloc[np.argsort(self.lcs["cheops"]["time"].values)] #Sorting by time, in case we are not already
 
+        
         if not hasattr(self,'cheops_filekeys'):
             self.cheops_filekeys=[filekey]
-        else:
+        elif filekey not in self.cheops_filekeys:
             self.cheops_filekeys+=[filekey]
+        self.logger.debug("Added filekey ("+filekey+") to global list (Now "+",".join(self.cheops_filekeys)+")")
         
         if not hasattr(self,'cheops_fk_mask'):
             self.cheops_fk_mask={}
         for fk in self.cheops_filekeys:
             self.cheops_fk_mask[fk]=(self.lcs["cheops"]['filekey'].values==fk)&(self.lcs["cheops"]['mask'].values)
         
-        self.descr_dict[filekey]={'src':["DRP","PIPE"][int(PIPE)],
+        self.descr_dict[filekey]={'src':["DRP","PIPE"][int(self.use_PIPE)],
                                   'len':(iche['time'].values[-1]-iche['time'].values[0]),
                                   'start':Time(iche['time'][0],format='jd').isot,
                                   'cad':np.nanmedian(np.diff(iche['time'])),
@@ -585,8 +647,9 @@ class chexo_model():
         Optional args:
             npoly_rv (int): 
         """
-
         self.update(**kwargs)
+
+        self.logger.debug("Adding RVs")
 
         #initialising stored dicts:
         if not hasattr(self,"rvs") or overwrite:
@@ -623,11 +686,15 @@ class chexo_model():
         """
         self.update(**kwargs)
 
+        self.logger.debug("Adding starpars")
+
         if Rstar is None and hasattr(self.monotools_lc,'all_ids') and 'tess' in self.monotools_lc.all_ids and 'data' in self.monotools_lc.all_ids['tess'] and 'rad' in self.monotools_lc.all_ids['tess']['data']:
             #Radius info from lightcurve data (TIC)
             if 'eneg_Rad' in self.monotools_lc.all_ids['tess']['data'] and self.monotools_lc.all_ids['tess']['data']['eneg_Rad'] is not None and self.monotools_lc.all_ids['tess']['data']['eneg_Rad']>0:
+                self.logger.debug("Getting starpars from MonoTools lightcurve/TIC data - epos and eneg exists")
                 Rstar=self.monotools_lc.all_ids['tess']['data'][['rad','eneg_Rad','epos_Rad']].values
             else:
+                self.logger.debug("Getting starpars from MonoTools lightcurve/TIC data - e_rad exists")
                 Rstar=self.monotools_lc.all_ids['tess']['data'][['rad','e_rad','e_rad']].values
         if (Rstar is None)|(np.all(np.isnan(np.array(Rstar).astype(float)))):
             Rstar=None
@@ -638,7 +705,7 @@ class chexo_model():
                 Teff=self.monotools_lc.all_ids['tess']['data'][['Teff','eneg_Teff','epos_Teff']].values
             else:
                 Teff=self.monotools_lc.all_ids['tess']['data'][['Teff','e_Teff','e_Teff']].values
-        print(Teff,type(Teff),type(Teff[0]))
+        self.logger.debug(["Teff:",Teff,type(Teff),type(Teff[0])])
         if (Teff is None)|(np.all(np.isnan(np.array(Teff).astype(float)))):
             Teff=None
         elif np.isnan(Teff[1]) or np.isnan(Teff[2]):
@@ -804,7 +871,6 @@ class chexo_model():
         if not hasattr(self,'lc_fit') or self.overwrite:
             self.lc_fit={scope:pd.DataFrame() for scope in self.lcs}
         for src in self.lcs:
-            
             if src=="cheops":
                 self.init_cheops()
             else:
@@ -833,7 +899,8 @@ class chexo_model():
                                                         self.lcs[src]['flux'].values[self.lcs[src]['mask']],
                                                         self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
                                     self.bin_size)
-                print(ibinlc)
+                self.logger.debug("bin lc")
+                self.logger.debug(ibinlc)
                 bin_ix=~np.isnan(np.sum(ibinlc,axis=1))
                 self.binlc[src]=pd.DataFrame({'time':ibinlc[bin_ix,0],'flux':ibinlc[bin_ix,1],'flux_err':ibinlc[bin_ix,2]})
                 if self.fit_flat:
@@ -971,7 +1038,7 @@ class chexo_model():
 
             #optimizing:
             start = ootmodel.test_point
-            print(ootmodel.check_test_point())
+            self.logger.debug(ootmodel.check_test_point())
             oot_soln = pmx.optimize(start=start)
 
         #Sampling:
@@ -984,7 +1051,8 @@ class chexo_model():
                                         compute_convergence_checks=False)
 
 
-    def cheops_only_model(self, fk, transittype="fix", force_no_dydt=True, overwrite=False,linpars=None,quadpars=None,**kwargs):
+    def cheops_only_model(self, fk, transittype="fix", force_no_dydt=True, overwrite=False, include_PIPE_PCs=True, 
+                          linpars=None, quadpars=None, split_spline_fit_vars=['deltaT','smear','bg'], split_spline_dt=9.8/1440, **kwargs):
         """Initialising and running a Cheops-only transit model for a given filekey
 
         Args:
@@ -992,7 +1060,10 @@ class chexo_model():
             transittype (str, optional): How to include transit model - "set": set by TESS transits, "loose": allowed to vary, "none": no transit at all. Defaults to "fix".
             force_no_dydt (optional): Do we force the model to avoid using decorrelation with trends? Defaults to None, which mirrors include_transit
             overwrite (bool, optional): Whether to rewrite this initialise model. If not, it will try to reload a pre-run model. Defaults to False.
+            include_PIPE_PCs (bool, optional): Whether to include PIPE PCA of model residuals as decorrelation parameter 
             linpars (list of strings, optional): Specify the parameters to use for the linear decorrelation. For sin/cos, use cosNphi where N is the harmonic (i.e. normal = 1)
+            split_spline_fit_vars (list, optional): The specific parameters which we can use a spline to split into high and low frequency variability
+            split_spline_dt (float, optional): The time span to be used as spline knots; default = 10 knots per orbit/1 per ~10mins
             quadpars (list of strings, optional): Specify the parameters to use for the quadratic decorrelation
         
         Returns:
@@ -1008,12 +1079,22 @@ class chexo_model():
 
         if not hasattr(self,'cheops_init_trace'):
             self.cheops_init_trace={}
+        
+        include_PIPE_PCs=False if not self.use_PIPE else include_PIPE_PCs
 
         if linpars is None:
             #Initialising decorrelation parameters:
             self.init_cheops_linear_decorr_pars=['sin1phi','cos1phi','sin2phi','cos2phi','sin3phi','cos3phi','bg','centroidx','centroidy','time']
             if 'smear' in self.lcs["cheops"].columns: self.init_cheops_linear_decorr_pars+=['smear']
             if 'deltaT' in self.lcs["cheops"].columns and not force_no_dydt: self.init_cheops_linear_decorr_pars+=['deltaT']
+            if include_PIPE_PCs:
+                for nPC in range(9):
+                    #Checking if we have this array in the CHEOPS lightcurve, and if not all the values are the same...
+                    if "U"+str(int(nPC)) in self.lcs["cheops"].columns:
+                        #Making any nans into zeros:
+                        self.lcs["cheops"].loc[np.isnan(self.lcs["cheops"]["U"+str(int(nPC))]),"U"+str(int(nPC))]=0.0
+                        if np.sum(np.diff(self.lcs["cheops"]["U"+str(int(nPC))])==0.0)<0.2*self.lcs["cheops"].shape[0]: 
+                            self.init_cheops_linear_decorr_pars+=["U"+str(int(nPC))]
             if force_no_dydt: self.init_cheops_linear_decorr_pars.remove('time')
         else:
             self.init_cheops_linear_decorr_pars=linpars
@@ -1021,6 +1102,10 @@ class chexo_model():
             self.init_cheops_quad_decorr_pars=['bg','centroidx','centroidy']
             if 'smear' in self.lcs["cheops"].columns: self.init_cheops_quad_decorr_pars+=['smear']
             #if 'deltaT' in self.lcs["cheops"].columns and not force_no_dydt: self.init_cheops_quad_decorr_pars+=['deltaT'] 
+            if include_PIPE_PCs:
+                for nPC in range(9):
+                    #Checking if we have this array in the CHEOPS lightcurve, and if not all the values are the same...
+                    if "U"+str(int(nPC)) in self.lcs["cheops"].columns and np.sum(np.diff(self.lcs["cheops"]["U"+str(int(nPC))])==0.0)<0.2*self.lcs["cheops"].shape[0]: self.init_cheops_quad_decorr_pars+=["U"+str(int(nPC))]
             #if force_no_dydt: self.init_cheops_quad_decorr_pars.remove('time')
         else:
             self.init_cheops_quad_decorr_pars=quadpars
@@ -1030,26 +1115,47 @@ class chexo_model():
         #Using a robust average (logged) of the point-to-point error & the std as a prior for the decorrelation parameters
         self.cheops_mads[fk]=np.exp(0.5*(np.log(np.std(y))+np.log(np.nanmedian(abs(np.diff(y)))*1.06)))
         
+        #Splitting some params into two decorrelation paramaters - one encompassing long trends with time, one with short-term variation.
+        for var in split_spline_fit_vars:
+            if var in self.init_cheops_linear_decorr_pars or var in self.init_cheops_quad_decorr_pars:
+                if var+"slow" not in self.lcs["cheops"].columns:
+                    self.lcs["cheops"][var+"slow"]=np.zeros(len(self.lcs["cheops"]))
+                if var+"fast" not in self.lcs["cheops"].columns:
+                    self.lcs["cheops"][var+"fast"]=self.lcs["cheops"][var].values[:]
+                # Do a spline fit using split_spline_dt
+                self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,var+"slow"]=kepler_spline(self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,"time"],
+                                                                                          self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,var],
+                                                                                          np.isfinite(self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,var]),
+                                                                                          bk_space=split_spline_dt)[0]
+                self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var+"fast"]-=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var+"slow"]
+            #Removing variable and adding two new variables:
+            if var in self.init_cheops_linear_decorr_pars:
+                self.init_cheops_linear_decorr_pars.remove(var)
+                self.init_cheops_linear_decorr_pars+=[var+"slow",var+"fast"]
+            if var in self.init_cheops_quad_decorr_pars:
+                self.init_cheops_quad_decorr_pars.remove(var)
+                self.init_cheops_quad_decorr_pars+=[var+"slow",var+"fast"]
+
         yerr=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux_err'].values
         for var in self.init_cheops_linear_decorr_pars+self.init_cheops_quad_decorr_pars:
             if var in self.lcs["cheops"].columns:
-                print(var,fk)
+                self.logger.debug(str(var)+fk)
                 self.norm_cheops_dat[fk][var]=(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values-np.nanmedian(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values))/np.nanstd(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values)
             elif var[:3]=='sin':
                 if var[3] not in ['1','2','3','4']:
-                    print(var,var[3], "- Must have a number in the cos/sin parameter name to represent the harmonic, e.g. cos1phi or sin3phi")
+                    self.logger.warning(str(var)+str(var[3])+"- Must have a number in the cos/sin parameter name to represent the harmonic, e.g. cos1phi or sin3phi")
                     var=var[:3]+"1"+var[3:]
                 #self.norm_cheops_dat[fk]
                 self.norm_cheops_dat[fk][var]=np.sin(float(int(var[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var[-3:]].values*np.pi/180)
             elif var[:3]=='cos':
                 if var[3] not in ['1','2','3','4']:
-                    print(var,var[3], "- Must have a number in the cos/sin parameter name to represent the harmonic, e.g. cos1phi or sin3phi")
+                    self.logger.warning(str(var)+str(var[3])+"- Must have a number in the cos/sin parameter name to represent the harmonic, e.g. cos1phi or sin3phi")
                     var=var[:3]+"1"+var[3:]
                 self.norm_cheops_dat[fk][var]=np.cos(float(int(var[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var[-3:]].values*np.pi/180)
-        #print(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl"),os.path.exists(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl")),overwrite)
+        #self.logger.debug(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl"),os.path.exists(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl")),overwrite)
         if not overwrite and os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl")):
             self.cheops_init_trace[savefname[1:]]=pickle.load(open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"rb"))
-            print("Cheops pre-modelled trace exists for filekey=",fk," at",self.unq_name+savefname+".pkl")
+            self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+self.unq_name+savefname+".pkl")
             return savefname[1:]
         
         with pm.Model() as self.ichlc_models[fk]:
@@ -1080,7 +1186,7 @@ class chexo_model():
                                                                       testval=np.clip(self.planets[pl]['b'],0.025,0.975))
                             tdurs[pl]=pm.Normal("tdur_"+pl, mu=self.planets[pl]['tdur'],sd=0.03,testval=self.planets[pl]['tdur'])
                             ntrans=np.round((np.nanmedian(x)-self.planets[pl]['tcen'])/self.planets[pl]['period'])
-                            if (self.planets[pl]['tcen_err']+self.planets[pl]['period_err']*ntrans)>2/14: print("Ephemeris potentially lost. Error = ",self.planets[pl]['tcen_err']+self.planets[pl]['period_err']*ntrans,"days")
+                            if (self.planets[pl]['tcen_err']+self.planets[pl]['period_err']*ntrans)>2/14: self.logger.warning("Ephemeris potentially lost. Error = ",self.planets[pl]['tcen_err']+self.planets[pl]['period_err']*ntrans,"days")
                             t0s[pl] = pm.Normal("t0_"+pl, mu=self.planets[pl]['tcen']+self.planets[pl]['period']*ntrans,
                                                 sd=np.clip(self.planets[pl]['tcen_err']+self.planets[pl]['period_err']*ntrans,0.01,0.2),
                                                 testval=self.planets[pl]['tcen']+self.planets[pl]['period']*ntrans)
@@ -1131,7 +1237,7 @@ class chexo_model():
                 if len(pers)>0:
                     cheops_summodel_x = pm.Deterministic("cheops_summodel_x_"+fk, tt.sum([cheops_planets_x[pl] for pl in self.planets], axis=0) + cheops_flux_cor)
                 elif len(pers)==1:
-                    tt.printing.Print("cheops_flux_cor")(cheops_flux_cor)
+                    #tt.printing.Print("cheops_flux_cor")(cheops_flux_cor)
                     #tt.printing.Print("cheops_flux_cor")(cheops_planets_x[list(self.planets.keys())[0]])
                     #print(cheops_planets_x[list(self.planets.keys())[0]].shape,)
                     cheops_summodel_x = pm.Deterministic("cheops_summodel_x_"+fk, cheops_planets_x[list(self.planets.keys())[0]] + cheops_flux_cor)
@@ -1205,7 +1311,7 @@ class chexo_model():
         for fk in self.cheops_filekeys:
             mint=np.min(self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,'time'].values)
             maxt=np.max(self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,'time'].values)
-            print(mint,maxt,self.cheops_cad)
+            self.logger.debug([mint,maxt,self.cheops_cad])
             ix_gaps=np.min(abs(np.arange(mint,maxt,self.cheops_cad)[:,None]-self.lcs["cheops"].loc[self.lcs["cheops"]['filekey']==fk,'time'].values[None,:]),axis=1)>0.66*self.cheops_cad
             self.cheops_gap_timeseries+=[np.arange(mint,maxt,self.cheops_cad)[ix_gaps]]
             self.cheops_gap_fks+=[np.tile(fk, np.sum(ix_gaps))]
@@ -1235,13 +1341,14 @@ class chexo_model():
 
         #Looping over all Cheops datasets and building individual models which we can then extract stats for each detrending parameter
         for fk in self.cheops_filekeys:
-            print("Performing Cheops-only minimisation with all detrending params for filekey ",fk)
+            self.logger.info("Performing Cheops-only minimisation with all detrending params for filekey "+fk)
             #Launching a PyMC3 model
             tracename = self.cheops_only_model(fk, include_transit=True, force_no_dydt=force_no_dydt,**kwargs)
 
             var_names=[var for var in self.cheops_init_trace[tracename].varnames if '__' not in var and np.product(self.cheops_init_trace[tracename][var].shape)<6*np.product(self.cheops_init_trace[tracename]['cheops_logs'].shape)]
             self.init_chefit_summaries[fk]=pm.summary(self.cheops_init_trace[tracename],var_names=var_names,round_to=7)
 
+            #New idea: split into spline fit v time AND short-period parameter - spline. Should help with e.g. deltaT
             for par in self.init_cheops_linear_decorr_pars:
                 dfd_fitvalue=self.init_chefit_summaries[fk].loc["dfd"+par,'mean']
                 dfd_fitsd=self.init_chefit_summaries[fk].loc["dfd"+par,'sd']
@@ -1281,8 +1388,9 @@ class chexo_model():
             #Assessing which detrending parameters we can combine to a global parameter
             all_lin_params=np.unique([self.cheops_linear_decorrs[varname][0] for varname in self.cheops_linear_decorrs if self.cheops_linear_decorrs[varname][0]!='time'])
             all_quad_params=np.unique([self.cheops_quad_decorrs[varname][0] for varname in self.cheops_quad_decorrs if self.cheops_quad_decorrs[varname][0]!='time'])
-            #print(all_lin_params)
-            #print(all_quad_params)
+            #self.logger.debug(all_lin_params)
+            #self.logger.debug(all_quad_params)
+            self.logger.debug(self.cheops_init_trace['cheops_only_fit_'+fk+'_trace_fixtrans'+['','_notrend'][int(force_no_dydt)]].varnames)
             for linpar in all_lin_params:
                 key='cheops_only_fit_'+fk+'_trace_fixtrans'+['','_notrend'][int(force_no_dydt)]
                 vals=np.column_stack([self.cheops_init_trace[key]["dfd"+linpar] for fk in self.cheops_filekeys])
@@ -1291,15 +1399,15 @@ class chexo_model():
                 # Anomalies will be >x sigma seperate from the group mean, while others will be OK 
                 for i in range(len(self.cheops_filekeys)):
                     not_i=np.array([i2!=i for i2 in range(len(self.cheops_filekeys))])
-                    #print(linpar, i, not_i, vals.shape, not_i.shape)
+                    #self.logger.debug(linpar, i, not_i, vals.shape, not_i.shape)
                     dists+=[abs(np.nanmedian(vals[:,i])-np.nanmedian(vals[:,not_i]))/np.sqrt(np.nanstd(vals[:,i])**2+np.nanstd(vals[:,not_i])**2)]
                 if np.sum(np.array(dists)<2)>1:
                     #Removing the inidividual correlation filekeys from the cheops_linear_decorrs list:
-                    #print(self.cheops_filekeys[np.array(dists)<2])
+                    #self.logger.debug(self.cheops_filekeys[np.array(dists)<2])
                     for fk in self.cheops_filekeys[np.array(dists)<2]:
                         fk_bool=np.array([int(i==fk) for i in self.cheops_filekeys])
                         varname="dfd"+linpar+"_"+"".join(list(fk_bool.astype(str)))
-                        #print(varname,self.cheops_linear_decorrs.keys())
+                        #self.logger.debug(varname,self.cheops_linear_decorrs.keys())
                         if varname in self.cheops_linear_decorrs:
                             _=self.cheops_linear_decorrs.pop(varname)
                     #Replacing them with a combined cheops_linear_decorrs:
@@ -1345,6 +1453,7 @@ class chexo_model():
         #Let's iron this out and get a dictionary for each filekey of which detrending parameters are used...
         self.fk_linvars={}
         self.fk_quadvars={}
+        self.logger.debug(self.cheops_linear_decorrs)
         for fk in self.cheops_filekeys:
             self.fk_linvars[fk]=[var for var in self.cheops_linear_decorrs if fk in self.cheops_linear_decorrs[var][1]]
             self.fk_quadvars[fk]=[var for var in self.cheops_quad_decorrs if fk in self.cheops_quad_decorrs[var][1]]
@@ -1407,10 +1516,10 @@ class chexo_model():
                 self.model_comp[fk]['tr_BIC'] = self.model_comp[fk]['tr_waic']['p_waic'] * np.log(np.sum((self.lcs["cheops"]['filekey']==fk)&self.lcs["cheops"]['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_w_trans_name].out_llk_cheops))
                 self.model_comp[fk]['deltaBIC'] = self.model_comp[fk]['notr_BIC'] - self.model_comp[fk]['tr_BIC']
                 self.model_comp[fk]['BIC_pref_model']="transit" if self.model_comp[fk]['deltaBIC']<0 else "no_transit"
-                print(self.model_comp[fk]['notr_waic'].index)
-                #print(self.model_comp[fk]['notr_waic'].keys())
-                #print(self.model_comp[fk]['notr_waic']['elpd_waic'])
-                #print(self.model_comp[fk]['notr_waic'].loc['elpd_waic'],self.model_comp[fk]['tr_waic'].loc['elpd_waic'],self.model_comp[fk]['notr_waic'].shape,self.model_comp[fk]['tr_waic'].shape)
+                self.logger.debug(self.model_comp[fk]['notr_waic'].index)
+                #self.logger.debug(self.model_comp[fk]['notr_waic'].keys())
+                #self.logger.debug(self.model_comp[fk]['notr_waic']['elpd_waic'])
+                #self.logger.debug(self.model_comp[fk]['notr_waic'].loc['elpd_waic'],self.model_comp[fk]['tr_waic'].loc['elpd_waic'],self.model_comp[fk]['notr_waic'].shape,self.model_comp[fk]['tr_waic'].shape)
                 if "elpd_waic" in self.model_comp[fk]['tr_waic']:
                     self.model_comp[fk]['deltaWAIC']=self.model_comp[fk]['tr_waic']['elpd_waic']-self.model_comp[fk]['notr_waic']['elpd_waic']
                     waic_errs=np.sqrt(self.model_comp[fk]['tr_waic'][1]**2+self.model_comp[fk]['notr_waic'][1]**2)
@@ -1423,21 +1532,21 @@ class chexo_model():
                 self.model_comp[fk]['WAIC_pref_model']="transit" if self.model_comp[fk]['deltaWAIC']>0 else "no_transit"
                 #confidence="No detection" if self.model_comp[fk]['deltaWAIC']<2 else "Moderate detection" if (self.model_comp[fk]['deltaWAIC']>=2)&(self.model_comp[fk]['deltaWAIC']<8) else "Strong detection"
                 self.cheops_assess_statements[fk]=["For fk="+fk+" WAIC "+confidence+"; Delta WAIC ="+str(np.round(self.model_comp[fk]['deltaWAIC'],2)),"(BIC prefers"+self.model_comp[fk]['BIC_pref_model']+" with deltaBIC ="+str(np.round(self.model_comp[fk]['deltaBIC'],2))+"). "]
-                print(self.cheops_assess_statements[fk])
-                #print("BIC prefers",self.model_comp[fk]['BIC_pref_model'],"( Delta BIC =",np.round(self.model_comp[fk]['deltaBIC'],2),"). WAIC prefers",self.model_comp[fk]['WAIC_pref_model']," ( Delta WAIC =",np.round(self.model_comp[fk]['deltaWAIC'],2),")")
+                self.logger.info(self.cheops_assess_statements[fk])
+                #self.logger.info("BIC prefers",self.model_comp[fk]['BIC_pref_model'],"( Delta BIC =",np.round(self.model_comp[fk]['deltaBIC'],2),"). WAIC prefers",self.model_comp[fk]['WAIC_pref_model']," ( Delta WAIC =",np.round(self.model_comp[fk]['deltaWAIC'],2),")")
                 
                 for pl in self.planets:
                     if 'logror_'+pl in self.cheops_init_trace[trace_w_trans_name].varnames:
                         ror_info=[np.nanmedian(np.exp(self.cheops_init_trace[trace_w_trans_name]['logror_'+pl])),np.nanstd(np.exp(self.cheops_init_trace[trace_w_trans_name]['logror_'+pl]))]
                         sigdiff=abs(np.sqrt(self.planets[pl]['depth'])-ror_info[0])/ror_info[1]
                         pl_statement="For planet "+str(pl)+" the derived radius ratio is "+str(ror_info[0])[:7]+"±"+str(ror_info[1])[:7]+" which is "+str(sigdiff)[:4]+"-sigma from the expected value given TESS depth ("+str(np.sqrt(self.planets[pl]['depth']))[:7]+")"
-                        print(pl_statement)
+                        self.logger.info(pl_statement)
                         self.cheops_assess_statements[fk]+=[pl_statement]
 
                 self.plot_cheops(tracename=trace_no_trans_name, show_detrend=show_detrend, fk=fk, **kwargs)
                 self.plot_cheops(tracename=trace_w_trans_name, show_detrend=show_detrend, fk=fk, **kwargs)
             elif np.any(self.lcs["cheops"][(self.lcs["cheops"]['filekey']==fk)&(~self.lcs["cheops"]['in_trans_all'])]):
-                print("No transit event during observation with fk ="+fk)
+                self.logger.info("No transit event during observation with fk ="+fk)
                 self.cheops_assess_statements[fk]=["There appears to be no transit event during observation with fk ="+fk+" according to ephemeris."]
     
     def init_ttvs(self,**kwargs):
@@ -1446,8 +1555,8 @@ class chexo_model():
         self.init_transit_inds={}
         for pl in self.planets:
             #Figuring out how
-            min_ntr=int(np.floor((np.min(np.hstack([self.lcs[scope]['time'] for scope in self.lcs]))-self.planets[pl]['tcen'])/self.planets[pl]['period']))
-            max_ntr=int(np.ceil((np.max(np.hstack([self.lcs[scope]['time'] for scope in self.lcs]))-self.planets[pl]['tcen'])/self.planets[pl]['period']))
+            min_ntr=int(np.floor((np.min(np.hstack([self.lcs[scope]['time'] for scope in self.lcs]))-self.planets[pl]['tdur']*0.5-self.planets[pl]['tcen'])/self.planets[pl]['period']))
+            max_ntr=int(np.ceil((np.max(np.hstack([self.lcs[scope]['time'] for scope in self.lcs]))+self.planets[pl]['tdur']*0.5-self.planets[pl]['tcen'])/self.planets[pl]['period']))
 
             if 'tcens' not in self.planets[pl]:
                 tcens=self.planets[pl]['tcen']+np.arange(min_ntr,max_ntr)*self.planets[pl]['period']
@@ -1563,7 +1672,7 @@ class chexo_model():
             self.model_params['a_Rs']={};self.model_params['sma']={};self.model_params['S_in']={};self.model_params['Tsurf_p']={}
             min_ps={pl:self.planets[pl]['period']*(1-1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
             max_ps={pl:self.planets[pl]['period']*(1+1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
-            print(min_ps,max_ps,[self.planets[pl]['period'] for pl in self.planets],np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))
+            self.logger.debug([min_ps,max_ps,[self.planets[pl]['period'] for pl in self.planets],np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit]))])
             if self.fit_ttvs or self.split_periods is not None:
                 self.model_params['transit_times']={}
             if self.split_periods is not None:
@@ -1733,7 +1842,7 @@ class chexo_model():
             #                    RVs:
             # -------------------------------------------
             if hasattr(self,'rvs'):
-                print(self.planets.keys())
+                self.logger.debug(self.planets.keys())
                 for pl in self.planets:
                     self.model_params['vrad_x'][pl]  = pm.Deterministic("vrad_x_"+pl,self.model_params['orbit'][pl].get_radial_velocity(self.rvs['time'], K=tt.exp(self.model_params['logK'][pl]))) #
                     tt.printing.Print("vrad_x_"+pl)(self.model_params['vrad_x'][pl])
@@ -1833,7 +1942,7 @@ class chexo_model():
             #         Cheops detrending (linear)
             # -------------------------------------------
             if "cheops" in self.lcs:
-                print("FKS=",self.cheops_filekeys)
+                self.logger.debug("FKS="+",".join(self.cheops_filekeys))
 
                 #Initialising linear (and quadratic) parameters:
                 self.model_params['linear_decorr_dict']={}#i:{} for i in self.cheops_filekeys}
@@ -1934,10 +2043,10 @@ class chexo_model():
                         n_split=int(self.phi_model_type.split("_")[1])
                         split_av_times=np.sort([np.nanmedian(self.lcs["cheops"]['time'][self.lcs["cheops"]['filekey']==fk]) for fk in self.cheops_filekeys])
                         assert n_split>=2 and len(split_av_times)>n_split, "Must split into at least 2 parts ("+str(n_split)+"), and there must be at least N splits in CHEOPS observations ("+str(len(split_av_times))+")"
-                        print(n_split,split_av_times,np.sort(np.diff(split_av_times))[::-1])
+                        self.logger.debug([n_split,split_av_times,np.sort(np.diff(split_av_times))[::-1]])
                         split_limit=np.sort(np.diff(split_av_times))[::-1][n_split-1]
                         n_jumps=np.where(np.diff(split_av_times)>split_limit)[0]
-                        print(split_limit,split_av_times,np.diff(split_av_times)>split_limit,n_jumps)
+                        self.logger.debug([split_limit,split_av_times,np.diff(split_av_times)>split_limit,n_jumps])
                         split_times=[np.min(self.lcs["cheops"]['time'])-0.1]+[0.5*(split_av_times[:-1][n_j]+split_av_times[1:][n_j]) for n_j in n_jumps]+[np.max(self.lcs["cheops"]['time'])+0.1]
                         self.lcs["cheops"]['n_phi_model']=np.tile(np.nan,len(self.lcs['cheops']['time']))
                         for n_st in range(n_split):
@@ -1956,10 +2065,10 @@ class chexo_model():
                     n_knots=int(np.round((minmax[1]-minmax[0])/self.spline_bkpt_cad))
                     spline_index_arr=np.zeros((len(self.lcs["cheops"]['time']),len(np.unique(self.lcs["cheops"]['n_phi_model']))))
                     self.knots_per_model={'all':np.quantile(self.lcs["cheops"]['phi'].values,np.linspace(0,1,n_knots))}
-                    print(spline_index_arr.shape)
+                    self.logger.debug(spline_index_arr.shape)
                     for nreg in np.unique(self.lcs["cheops"]['n_phi_model']).astype(int):
                         spline_index_arr[self.lcs["cheops"]['n_phi_model']==nreg,nreg]=1.0
-                        print(np.shape(spline_index_arr[self.lcs["cheops"]['n_phi_model']==nreg,nreg]))
+                        self.logger.debug(np.shape(spline_index_arr[self.lcs["cheops"]['n_phi_model']==nreg,nreg]))
                         ix=(self.lcs["cheops"]['n_phi_model']==nreg)
                         #self.knots_per_model[nreg]=np.quantile(self.lcs["cheops"].loc[ix,'phi'].values,np.linspace(0,1,n_knots))
                         B[nreg], self.knots_per_model[nreg] = create_angle_spline_dmatrix(self.lcs["cheops"].loc[ix,'phi'].values, bkpt_cad=self.spline_bkpt_cad)
@@ -1977,17 +2086,17 @@ class chexo_model():
                             self.model_params['spline_model'][fk] = pm.Deterministic("spline_model_"+str(fk), 
                                                                                           self.model_params['spline_model'][nreg][(self.lcs["cheops"].loc[ix,'filekey'].values==fk)&self.lcs['cheops'].loc[ix,'mask'].values])
                             tt.printing.Print(str(fk))(self.model_params['spline_model'][nreg])
-                            print(fk,"flux",self.lcs["cheops"].loc[fkix,'flux'].values)
-                            print(fk,"time",self.lcs["cheops"].loc[fkix,'time'].values)
-                            print(fk,"sort phi",np.sort(self.lcs["cheops"].loc[fkix,'phi'].values))
+                            self.logger.debug([fk,"flux",self.lcs["cheops"].loc[fkix,'flux'].values])
+                            self.logger.debug([fk,"time",self.lcs["cheops"].loc[fkix,'time'].values])
+                            self.logger.debug([fk,"sort phi",np.sort(self.lcs["cheops"].loc[fkix,'phi'].values)])
 
 
                     #Applying the splines to all times, by stack/index/summing into get a single phi array:
                     for nreg in pd.unique(self.lcs["cheops"]['n_phi_model']):
                         tt.printing.Print(str(nreg)+" splines")(self.model_params['splines'][nreg].T)
-                        print(str(nreg)+" splines",np.asarray(B[nreg], order="F"))
+                        self.logger.debug([str(nreg)+" splines",np.asarray(B[nreg], order="F")])
                         tt.printing.Print(str(nreg)+" dot prod")(pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg].T))
-                    print(spline_index_arr[np.argsort(self.lcs["cheops"]['phi'].values),:])
+                    self.logger.debug(spline_index_arr[np.argsort(self.lcs["cheops"]['phi'].values),:])
                     tt.printing.Print("stacked")(tt.concatenate([pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg].T) for nreg in pd.unique(self.lcs["cheops"]['n_phi_model'])]))
                     self.model_params['spline_model_alltime'] = pm.Deterministic("spline_model_alltime", tt.sum(tt.concatenate([pm.math.dot(np.asarray(B[nreg], order="F"), self.model_params['splines'][nreg]) for nreg in pd.unique(self.lcs["cheops"]['n_phi_model'])])*spline_index_arr.T,axis=0))
                     tt.printing.Print("spline_model_alltime")(self.model_params['spline_model_alltime'])
@@ -2020,8 +2129,9 @@ class chexo_model():
                     #        np.sum(mod.cheops_lc.loc[mod.cheops_lc['mask'],'flux'][:,None]*cheops_binphi_2d_index,axis=0),
                     tt.printing.Print("diag")((np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux_err'][:,None]*self.cheops_binphi_2d_index**1.5,axis=0))** 2 + \
                                                                                             (tt.sum(tt.exp(self.model_params['cheops_logs'])*self.cheops_binphi_2d_index**1.5,axis=0))**2)
-                    print(np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi'][:,None]*self.cheops_binphi_2d_index,axis=0))
-                    print("flux",np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux'][:,None]*self.cheops_binphi_2d_index,axis=0))
+                    self.logger.debug(np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi'][:,None]*self.cheops_binphi_2d_index,axis=0))
+                    self.logger.debug("flux:")
+                    self.logger.debug(np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux'][:,None]*self.cheops_binphi_2d_index,axis=0))
                     self.model_params['gp_rollangles'] = celerite2.theano.GaussianProcess(self.model_params['rollangle_kernels'], 
                                                                                         np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi'][:,None]*self.cheops_binphi_2d_index,axis=0), mean=0.0,
                                                                                         diag=(np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux_err'][:,None]*self.cheops_binphi_2d_index**1.5,axis=0))** 2 + \
@@ -2030,7 +2140,7 @@ class chexo_model():
                     #self.model_params['gp_rollangles'].compute(np.sort(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi'].values),
                     #                                           diag=..., quiet=True)
                 elif self.fit_phi_gp and "split" in self.phi_model_type and len(self.cheops_filekeys)>1:
-                    print("Not yet implemented")
+                    self.logger.debug("Not yet implemented")
                 elif self.fit_phi_gp:
                     for fk in self.cheops_filekeys:
                         # Roll angle vs flux GP                
@@ -2061,7 +2171,7 @@ class chexo_model():
                         self.model_params['gp_rollangle_model_phi'][fk] = pm.Deterministic("gp_rollangle_model_phi_"+str(fk), 
                                                                                         self.model_params['gp_rollangle_model_allphi'][np.array(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'filekey'].values[self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'mask_allphi_sorting']]==fk)])
                 elif self.fit_phi_gp and self.phi_model_type=="split" and len(self.cheops_filekeys)>1:
-                    print("SPLIT GP NOT IMPLEMENTED YET")
+                    self.logger.debug("SPLIT GP NOT IMPLEMENTED YET")
                 # -------------------------------------------
                 #      Evaluating log likelihoods            
                 # -------------------------------------------
@@ -2111,13 +2221,15 @@ class chexo_model():
                     tt.printing.Print(scope+"_llk")(self.model_params[scope+'_llk'])
                 elif scope=="cheops":
                     #Doing cheops-specific stuff here.
-                    print("NA")
+                    self.logger.debug("NA")
             if hasattr(self,"rvs"):
                 rv_logjitter = pm.Normal("rv_logjitter",mu=np.nanmin(self.rvs['yerr'].values)-3,sd=3)
                 rv_sigma2 = self.rvs['yerr'].values ** 2 + tt.exp(rv_logjitter)**2
                 self.model_params['llk_rv'] = pm.Potential("llk_rv", -0.5 * tt.sum((self.rvs['y'].values - self.model_params['rv_model_x']) ** 2 / rv_sigma2 + np.log(rv_sigma2)))
 
             #print(self.model.check_test_point())
+
+            self.pre_model_soln = pmx.optimize(vars = self.model_params['tess_logs'])
 
             #First try to find best-fit transit stuff:
             if not self.fit_ttvs:
@@ -2177,7 +2289,7 @@ class chexo_model():
                 ivars+=[self.model_params['logK'][pl] for pl in self.planets]+[self.model_params['rv_offsets']]
                 if self.npoly_rv>1:
                     ivars+=[self.model_params['rv_trend']]
-            print(ivars)
+            self.logger.debug(ivars)
             comb_soln = pmx.optimize(start=comb_soln, vars=ivars)
 
             #Doing everything:
@@ -2310,7 +2422,7 @@ class chexo_model():
             self.ttv_model_params['a_Rs']={};self.ttv_model_params['sma']={};self.ttv_model_params['S_in']={};self.ttv_model_params['Tsurf_p']={}
             min_ps={pl:self.planets[pl]['period']*(1-1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
             max_ps={pl:self.planets[pl]['period']*(1+1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
-            print(min_ps,max_ps,[self.planets[pl]['period'] for pl in self.planets],np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))
+            self.logger.debug([min_ps,max_ps,[self.planets[pl]['period'] for pl in self.planets],np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit]))])
             self.ttv_model_params['transit_times']={}
 
             if not self.assume_circ:
@@ -2396,8 +2508,10 @@ class chexo_model():
                                                                                                                                    t=cor_lcs[scope][:,0])[:,0]*1000)
                 self.ttv_model_params[scope+'_allplanets_x'] = pm.Deterministic(scope+"_allplanets_x", tt.sum([self.ttv_model_params[scope+'_planets_x'][pl] for pl in self.planets],axis=0))
                 sigma2s[scope] = cor_lcs[scope][:,2] ** 2 + tt.exp(self.ttv_model_params[scope+'_logs'])**2
-                self.ttv_model_params[scope+'_llk'] = pm.Potential(scope+'_llk', -0.5 * tt.sum((cor_lcs[scope][:,1] - self.ttv_model_params[scope+'_allplanets_x']) ** 2/sigma2s[scope] + np.log(sigma2s[scope])))
-
+                #self.ttv_model_params[scope+'_llk'] = pm.Normal(scope+'_llk', mu=self.ttv_model_params[scope+'_allplanets_x'], sd=sigma2s[scope]**2, observed=cor_lcs[scope][:,1])
+                #-0.5 * tt.sum((cor_lcs[scope][:,1] - self.ttv_model_params[scope+'_allplanets_x']) ** 2/sigma2s[scope] + np.log(sigma2s[scope])))
+            self.ttv_model_params['log_likelihood'] = pm.Normal("log_likelihood", mu=tt.stack([self.ttv_model_params[scope+'_allplanets_x'] for scope in self.lcs]), sd=tt.stack([sigma2s[scope]**0.5 for scope in self.lcs]), observed=tt.stack([cor_lcs[scope][:,1] for scope in self.lcs]))
+            #pm.Deterministic('log_likelihood', tt.sum([tt.sum(self.ttv_model_params[scope+'_llk']) for scope in self.lcs]))
             #First try to find best-fit transit stuff:
             optvar=[]
             for pl in self.planets:
@@ -2418,7 +2532,7 @@ class chexo_model():
                     ivars+=[self.ttv_model_params['P'][pl],self.ttv_model_params['t0'][pl]]
             if not self.assume_circ:
                 ivars+=[self.ttv_model_params['ecc'][pl] for pl in self.planets]+[self.ttv_model_params['omega'][pl] for pl in self.planets]
-            print(ivars)
+            self.logger.debug(ivars)
             comb_soln = pmx.optimize(start=comb_soln, vars=ivars)
 
             #Doing everything:
@@ -2483,17 +2597,17 @@ class chexo_model():
             else:
                 assert hasattr(self,'init_soln'), "must have run `init_model`"
                 if 'gp_rollangle_model_phi_'+str(fk) in self.init_soln:
-                    print(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
+                    self.logger.debug(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
                 elif 'spline_model_'+str(fk) in self.init_soln:
-                    print(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
+                    self.logger.debug(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['spline_model_'+str(fk)][self.cheops_fk_mask[fk]]
                 else:
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.lcs["cheops"]['filekey']==fk] for pl in self.planets]),axis=0)
             starts+=[lcfk['time'].values[0]]
             effchecks=np.arange(0,dur-1,1/11)
             aveff=np.nanmedian([(np.sum((lcfk['time'].values>(lcfk['time'][0]+ec*0.0686))&(lcfk['time'].values<(lcfk['time'][0]+(ec+1)*0.0686)))*cad)/(98.77*60) for ec in effchecks])            
-            print(fk,int(np.round(aveff*100)))
+            self.logger.debug(fk+str(int(np.round(aveff*100))))
             info={"Date start":Time(lcfk['time'].values[0],format='jd').isot,
                   "BJD start":"$ "+str(lcfk['time'].values[0])+" $",
                   "Dur ["+dur_unit+"]":"$ "+str(np.round(dur*dur_mult,2))+" $",
@@ -2592,7 +2706,7 @@ class chexo_model():
         """
         if not hasattr(self,'models_out'):
             self.models_out={}
-        print(type(init_trace),type(init_trace)==pm.backends.base.MultiTrace)
+        self.logger.debug([type(init_trace),type(init_trace)==pm.backends.base.MultiTrace])
 
         if tracename is None and 'cheops' not in self.models_out or overwrite:
             assert init_trace is None and fk is None, "We will use the default \'self.trace\' for the final CHEOPS model. For an intermediate trace, specify the trace type & filekey)"
@@ -2895,7 +3009,7 @@ class chexo_model():
                             tab+=[['splines|'+fk+"|"+str(n),"CHEOPS "+fk+" rollangle B-spline "+str(n),"[ppt]","normal",0,np.nanmedian(abs(np.diff(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)))]]
         table=["\\hline"," & ".join(["Parameter","Unit","Prior","Posterior"])+"\\\\","\\hline"]
         for row in tab:
-            print(row)
+            self.logger.debug(row)
             newtabrow=[row[1],row[2]] #Name and unit
             if row[3].lower()=='normal':
                 round_int=int(-1*np.ceil(np.log10(row[5]))+1)
@@ -2967,12 +3081,12 @@ class chexo_model():
         #So (deltabic_wgp - deltabic_nogp)<0 prefers nogp
         delta_bic = 2*np.sum(self.lcs["cheops"]['mask']) + 2*(llk_cheops_nogp - llk_cheops_wgp)
         if delta_bic<0:
-            print("Assessment of the rollangle suggests a roll angle GP is not beneficial in this case. (",delta_bic,")")
+            self.logger.info("Assessment of the rollangle suggests a roll angle GP is not beneficial in this case. ("+str(delta_bic)+")")
             if make_change:
                 self.update(fit_phi_gp = False)
                 self.init_model()
         else:
-            print("Rollangle GP is beneficial with DelatBIC =",delta_bic)
+            self.logger.info("Rollangle GP is beneficial with DelatBIC ="+str(delta_bic))
     
     def check_rollangle_spline(self, make_change=True, **kwargs):
         """Checking now that the model is initialised whether the rollangle GP improves the loglik or not.
@@ -2990,12 +3104,12 @@ class chexo_model():
         #So (deltabic_wspline - deltabic_nospline)<0 prefers nospline
         delta_bic = 2*np.sum(self.lcs["cheops"]['mask']) + 2*(llk_cheops_nospline - llk_cheops_wspline)
         if delta_bic<0:
-            print("Assessment of the rollangle suggests a roll angle spline model is not beneficial in this case. (",delta_bic,")")
+            self.logger.info("Assessment of the rollangle suggests a roll angle spline model is not beneficial in this case. ("+str(delta_bic)+")")
             if make_change:
                 self.update(fit_phi_spline = False)
                 self.init_model()
         else:
-            print("Rollangle spline model is beneficial with DeltaBIC =",delta_bic)
+            self.logger.info("Rollangle spline model is beneficial with DeltaBIC ="+str(delta_bic))
                         
 
     def print_settings(self):
@@ -3003,6 +3117,7 @@ class chexo_model():
         settings=""
         for key in self.defaults:
             settings+=key+"\t\t"+str(getattr(self,key))+"\n"
+        self.logger.info(settings)
         print(settings)
 
     def save_trace(self):
@@ -3117,7 +3232,7 @@ class chexo_model():
             save_suffix (str, optional): Add suffix when saving. Default is blank.
             transparent (bool, optional): Whether to save pngs with a transparent background
         """
-        print(tracename)
+        self.logger.debug(tracename)
         from matplotlib.ticker import ScalarFormatter, FormatStrFormatter
         import seaborn as sns
         sns.set_palette("Paired")
@@ -3159,14 +3274,14 @@ class chexo_model():
             if show_detrend:
                 plt.subplot(2,len(fkloop),1+n)
                 plt.plot(self.models_out[tracename].loc[fk_ix,"time"],
-                         self.models_out[tracename].loc[fk_ix,"flux"], '.k',markersize=3.5,alpha=raw_alpha,zorder=1)
+                         self.models_out[tracename].loc[fk_ix,"flux"], '.k',markersize=2.5,alpha=raw_alpha,zorder=1)
                 binlc = bin_lc_segment(np.column_stack((self.models_out[tracename].loc[fk_ix,"time"],
                                                         self.models_out[tracename].loc[fk_ix,"flux"],
                                                         self.models_out[tracename].loc[fk_ix,"flux_err"])),1/120)
-                plt.errorbar(binlc[:,0], binlc[:,1], yerr=binlc[:,2], fmt='.',color='C3',markersize=10,zorder=2,alpha=0.75)
+                plt.errorbar(binlc[:,0], binlc[:,1], yerr=binlc[:,2], fmt='.',color='C3',markersize=5,zorder=2,alpha=0.75)
 
                 plt.plot(self.models_out[tracename].loc[fk_ix,"time"], yoffset+self.models_out[tracename].loc[fk_ix,"cheops_alldetrend_med"],'.',
-                         markersize=3.5,c='C1',alpha=raw_alpha,zorder=5)
+                         markersize=2.5,c='C1',alpha=raw_alpha,zorder=5)
                 if "cheops_alldetrend_+1sig" in self.models_out[tracename]:
                     plt.fill_between(self.models_out[tracename].loc[fk_ix,"time"], yoffset+self.models_out[tracename].loc[fk_ix,"cheops_alldetrend_-2sig"],
                                      yoffset+self.models_out[tracename].loc[fk_ix,"cheops_alldetrend_+2sig"],color='C0',alpha=0.15,zorder=3)
@@ -3189,11 +3304,11 @@ class chexo_model():
                 plt.subplot(1,len(fkloop),1+n)
             plt.plot(self.models_out[tracename].loc[fk_ix,"time"],
                      self.models_out[tracename].loc[fk_ix,"flux"]-self.models_out[tracename].loc[fk_ix,"cheops_alldetrend_med"],
-                    '.k',alpha=raw_alpha,markersize=3.5,zorder=1)
+                    '.k',alpha=raw_alpha,markersize=2.5,zorder=1)
             binlc = bin_lc_segment(np.column_stack((self.models_out[tracename].loc[fk_ix,'time'], 
                                                     self.models_out[tracename].loc[fk_ix,'flux']-self.models_out[tracename].loc[fk_ix,"cheops_alldetrend_med"],
                                                     self.models_out[tracename].loc[fk_ix,'flux_err'])),1/120)
-            plt.errorbar(binlc[:,0], binlc[:,1], yerr=binlc[:,2], c='C3', fmt='.',markersize=10, zorder=2, alpha=0.8)
+            plt.errorbar(binlc[:,0], binlc[:,1], yerr=binlc[:,2], c='C3', fmt='.',markersize=5, zorder=2, alpha=0.8)
             if n==0:
                 plt.ylabel("flux [ppt]")
             modtimes={}
@@ -3302,7 +3417,7 @@ class chexo_model():
                           'end':np.sort(upper_bounds)[nb]+0.005}
             sectinfo[nb]['dur']=sectinfo[nb]['end']-sectinfo[nb]['start']
             sectinfo[nb]['data_ix']=(self.lcs[src]['time'].values>=sectinfo[nb]['start'])&(self.lcs[src]['time'].values<=sectinfo[nb]['end'])
-        print(sectinfo)
+        self.logger.debug(sectinfo)
         return sectinfo
 
     
@@ -3320,7 +3435,7 @@ class chexo_model():
         field_df['dur']=field_df['jd_end']-field_df['jd_start']
         #Cutting all observations long before.after initial data
         #field_df=field_df.loc[(field_df['jd_end']>(np.min(self.lcs[src]['time'])-5))&(field_df['jd_start']<(np.max(self.lcs[src]['time'])+5))]
-        print(field_df.shape,np.sum(np.min(abs(field_df['jd_mid'][None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur'])))
+        self.logger.debug([field_df.shape,np.sum(np.min(abs(field_df['jd_mid'][None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur']))])
         field_df=field_df.loc[np.min(abs(field_df['jd_mid'][None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur'])]
         
         #getting true timings for jumps in photometric data:
@@ -3332,7 +3447,7 @@ class chexo_model():
         starts=sort_time[start_bool]
         #correlating jumps to start/stops in field times
         sectinfo={}
-        print(field_df)
+        self.logger.debug(field_df)
         for frow in field_df.iterrows():
             #Counts as matching if 1) there is data between start & stop, and 2) there are jumps within ~1d of start/stop
             has_data = np.sum((self.lcs[src]['time']>frow[1]['jd_start'])&(self.lcs[src]['time']<frow[1]['jd_end']))>500
@@ -3340,7 +3455,7 @@ class chexo_model():
             end_match = np.min(end_search)<6
             start_search=abs(frow[1]['jd_start']-starts)
             start_match = np.min(start_search)<6
-            print(frow[1]['jd_start'],frow[1]['jd_end'],ends,starts,np.min(end_search),np.min(start_search))
+            self.logger.debug([frow[1]['jd_start'],frow[1]['jd_end'],ends,starts,np.min(end_search),np.min(start_search)])
             if has_data&end_match&start_match:
                 #SECTOR MATCH
                 sectinfo[frow[1]['field_string']]={'start':starts[np.argmin(start_search)]-0.05,
@@ -3368,7 +3483,7 @@ class chexo_model():
             self.phot_plot_info[src]['sectinfo'] = self.init_phot_plot_sects(src)
         for ns in self.phot_plot_info[src]['sectinfo']:
             self.phot_plot_info[src]['sectinfo'][ns]['ix'] = (self.models_out[src]['time'].values>=self.phot_plot_info[src]['sectinfo'][ns]['start'])&(self.models_out[src]['time']<=self.phot_plot_info[src]['sectinfo'][ns]['end'])
-        
+        logging.debug(self.phot_plot_info[src])
         self.phot_plot_info[src]['transmin']=np.min(np.hstack([self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'].values for ns in self.phot_plot_info[src]['sectinfo']]))
         self.phot_plot_info[src]['stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values) for ns in self.phot_plot_info[src]['sectinfo']])
         self.phot_plot_info[src]['flat_stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values - \
@@ -3719,8 +3834,8 @@ class chexo_model():
                 minmax[0]=np.min([minmax[0],np.min(self.init_soln['vrad_t_'+pl])*1.05,np.min(self.rvs.loc[:,'y'] - other_pls_bg)*1.05])
                 minmax[1]=np.max([minmax[1],np.max(self.init_soln['vrad_t_'+pl])*1.05,np.max(self.rvs.loc[:,'y'] - other_pls_bg)*1.05])
             else:
-                print(np.dstack([self.trace['vrad_x_'+inpl] for inpl in self.planets if inpl!=pl]).shape)
-                print(np.sum(np.dstack([self.trace['vrad_x_'+inpl] for inpl in self.planets if inpl!=pl]),axis=2).shape)
+                self.logger.debug(np.dstack([self.trace['vrad_x_'+inpl] for inpl in self.planets if inpl!=pl]).shape)
+                self.logger.debug(np.sum(np.dstack([self.trace['vrad_x_'+inpl] for inpl in self.planets if inpl!=pl]),axis=2).shape)
                 other_pls_bg=np.nanmedian(self.trace['bkg_x']+np.sum(np.dstack([self.trace['vrad_x_'+inpl] for inpl in self.planets if inpl!=pl]),axis=2),axis=0)
                 for isc,sc in enumerate(pd.unique(self.rvs['scope'])):
                     plt.errorbar(rv_phase_x[self.rvs['scope'].values==sc],
@@ -3740,7 +3855,7 @@ class chexo_model():
                 plt.gca().set_yticklabels([])
             plt.xlabel("Time from t0 [d]")
         for n,pl in enumerate(self.planets):
-            print(minmax)
+            self.logger.debug(minmax)
             plt.subplot(2,len(self.planets),len(self.planets)+1+n)
             plt.ylim(minmax[0],minmax[1])
         if save:
@@ -3755,7 +3870,7 @@ class chexo_model():
         sns.set_palette("Paired")
         plt.figure(figsize=(5,3+2*len(self.planets)**0.66))
         if xlim is None:
-            print(np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),-1*2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]))
+            self.logger.debug([np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),-1*2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets])])
             xlim=(-1*2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]),
                   2/(len(self.planets)**0.5)*np.nanmax([self.planets[pl]['tdur'] for pl in self.planets]))
         for npl,pl in enumerate(self.planets):
@@ -3784,10 +3899,10 @@ class chexo_model():
 
                     #Need to also remove the influence of other planets here:
                     transmin = np.nanmin(self.models_out[scope].loc[ix,scope+'_'+pl+'model_med'])
-                    if scope=='tess':
-                        plflux=self.models_out[scope].loc[ix,'flux'].values-self.models_out[scope].loc[ix,scope+"_gpmodel_med"].values-self.models_out[scope].loc[ix,scope+"_allplmodel_med"].values+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values
-                    elif scope=='cheops':
+                    if scope=='cheops':
                         plflux=self.models_out[scope].loc[ix,'flux'].values-self.models_out[scope].loc[ix,scope+"_alldetrend_med"].values-self.models_out[scope].loc[ix,scope+"_allplmodel_med"].values+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values
+                    else:
+                        plflux=self.models_out[scope].loc[ix,'flux'].values-self.models_out[scope].loc[ix,scope+"_gpmodel_med"].values-self.models_out[scope].loc[ix,scope+"_allplmodel_med"].values+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values
                     plt.plot(phase, yoffset+plflux,'.',c='C'+str(nscope*2),alpha=raw_alpha,markersize=3,zorder=1)
                     binsrclc=bin_lc_segment(np.column_stack((np.sort(phase), plflux[np.argsort(phase)],
                                                             self.models_out[scope].loc[ix,'flux_err'].values[np.argsort(phase)])),self.planets[pl]['tdur']/8)
@@ -3865,7 +3980,7 @@ class chexo_model():
                 plt.xlabel("Time from transit [d]")
             else:
                 plt.gca().set_xticklabels([])
-            print(transmin,std)
+            self.logger.debug([transmin,std])
             if yoffsets is None:
                 plt.ylim(transmin-3*std,yoffset-abs(transmin))
             else:
@@ -3908,7 +4023,7 @@ class chexo_model():
             df=df.loc[df['TOI'].values.astype(int)==int(float(toi_names[0][3:]))]
         else:
             if len(self.planets)>1:
-                print("Without using `check_toi_list`, we have to assume the TOIs provided here match the planets in the model, i.e. with periods:",{npl:self.planets[npl]['period'] for npl in self.planets})
+                self.logger.warning("Without using `check_toi_list`, we have to assume the TOIs provided here match the planets in the model, i.e. with periods:",",".join([str(npl)+":"+str(self.planets[npl]['period']) for npl in self.planets]))
             for t in range(len(toi_names)):
                 if toi_names[t].find(".")==-1:
                     toi_names[t]+='.01'
@@ -3964,7 +4079,7 @@ class chexo_model():
             maxcovtoiname[fk]=self.planets[target_pl[fk]]['toi']
             maxcoverage[fk]=self.planets[target_pl[fk]][fk+"_coverage"]
         
-        print(tsnotes,type(tsnotes),base_toi_name,type(base_toi_name),desc,type(desc))
+        self.logger.info([tsnotes,type(tsnotes),base_toi_name,type(base_toi_name),desc,type(desc)])
         tsnotes+="Public \"CHATEAUX\" filler progam pilot observations of "+base_toi_name+" performed by the CHEOPS GTO. "
         allnotes={fk:tsnotes for fk in self.cheops_filekeys}
 
@@ -3995,10 +4110,10 @@ class chexo_model():
                         #Creating a plot for each CHEOPS filekey
                         self.plot_cheops(fk=fk)
                         #self.unq_name+"_"+fk+"_cheops_plots."+savetype
-                        print(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+fk+"_"+f+"*"),
-                                glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+fk+"_"+f+"*")))
+                        self.logger.debug([os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+fk+"_"+f+"*"),
+                                glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+fk+"_"+f+"*"))])
                         filename=glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+fk+"_"+f+"*"))[0]
-                        print(maxcovtoiname,str(maxcovtoiname[fk])+"L-"+initials.lower()+date+"cheops-gto-chateaux."+filename[-3:])
+                        self.logger.debug([maxcovtoiname,str(maxcovtoiname[fk])+"L-"+initials.lower()+date+"cheops-gto-chateaux."+filename[-3:]])
                         file_tags[f+"_"+fk] = str(maxcovtoiname[fk])+"L-"+initials.lower()+date+"cheops-gto-chateaux."+filename[-3:]
                         #Copying file to upload location
                         #print(upload_loc+file_tags[f])
