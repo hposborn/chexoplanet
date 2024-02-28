@@ -340,13 +340,16 @@ def starpars_from_MonoTools_lc(lc):
 
 def get_lds(n_samples,Teff,logg,FeH=0.0,xi_def=1.0, how='tess'):
     from scipy.interpolate import CloughTocher2DInterpolator as ct2d
-
     import pandas as pd
-    from astroquery.vizier import Vizier
-    setattr(Vizier,'ROW_LIMIT',999999999)
     if how.lower()=='tess':
         #Best-performing models according to https://arxiv.org/abs/2203.05661 is Phoenix 17 r-method:
-        lds=Vizier.get_catalogs("J/A+A/600/A30/tableab")[0].to_pandas()
+        if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","J_A+A_600_A30_tableab.csv")):
+            from astroquery.vizier import Vizier
+            setattr(Vizier,'ROW_LIMIT',999999999)
+            lds=Vizier.get_catalogs("J/A+A/600/A30/tableab")[0].to_pandas()
+            lds.to_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","J_A+A_600_A30_tableab.csv"))
+        else:
+            lds=pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","J_A+A_600_A30_tableab.csv"),index_col=0)
         lds=lds.loc[(lds['Type']=='r')&((lds['Mod']=="PD")^(lds['Teff']>3000))]
         if 'xi' not in lds.columns:
             lds['xi']=np.tile(1,len(lds))
@@ -653,7 +656,7 @@ def update_period_w_tls(time,flux,per):
     from transitleastsquares import transitleastsquares as tls
     tlsmodel=tls(t=time,
                 y=1+flux*1e-3)
-    outtls=tlsmodel.power(period_min=per*0.995,period_max=per*1.005,use_threads=4,duration_grid_step=1.05,
+    outtls=tlsmodel.power(period_min=per*0.999,period_max=per*1.001,use_threads=4,duration_grid_step=1.2,
                         oversampling_factor=2,transit_depth_min=100e-6)
     return outtls.period
 
@@ -736,8 +739,7 @@ def ProcessTOI(toi,toi_cat,all_cheops_obs,cheops_ors,commentstring="V0300_horus"
     mod.init_cheops(use_bayes_fact=True, use_signif=False, overwrite=False)
 
     #Initialising full model:
-    mod.init_model(use_mstar=False, use_logg=True,fit_phi_spline=True,fit_phi_gp=False,phi_model_type="common",
-                    constrain_lds=True, fit_ttvs=False, assume_circ=True)
+    mod.init_model(use_mstar=False, use_logg=True,fit_phi_spline=True,fit_phi_gp=False,phi_model_type="common", constrain_lds=True, fit_ttvs=False, assume_circ=True)
 
     mod.sample_model()
     mod.model_comparison_cheops()
