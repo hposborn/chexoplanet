@@ -25,7 +25,8 @@ warnings.filterwarnings("ignore")
 import logging 
 # logging.getLogger("filelock").setLevel(logging.ERROR)
 # logging.getLogger("theano").setLevel(logging.ERROR)
-# logging.getLogger("matplotlib").setLevel(logging.ERROR)
+logging.getLogger("matplotlib").setLevel(logging.ERROR)
+logging.getLogger('numba').setLevel(logging.WARNING)
 
 import sys
 floattype=np.float64
@@ -200,7 +201,7 @@ class chexo_model():
             cad_ix=(self.monotools_lc.mask)&(misss==unq_miss_id)
             self.add_lc(self.monotools_lc.time[cad_ix]+2457000,self.monotools_lc.flux[cad_ix],self.monotools_lc.flux_err[cad_ix],source=lc_dic_flipped[unq_miss_id])
 
-    def get_cheops(self, do_search=True, catname=None, n_prog=None, distthresh=3, download=True, PIPE=True, fks=None, start_date=None,end_date=None, **kwargs):
+    def get_cheops(self, do_search=True, catname=None, n_prog=None, distthresh=3, download=True, PIPE=True, fks=None, start_date=None,end_date=None, vmag=None, **kwargs):
         """Automatically download CHEOPS data using Dace.
 
         Args:
@@ -212,8 +213,14 @@ class chexo_model():
         fks - List of CHEOPS filekeys to use. Default = None
         start_date - Date from which to access CHEOPS data
         end_date - Date until when to access CHEOPS data
+        vmag - If we are only taking the data from file, we need the vmag for PIPE
         """
         catname= self.name if catname is None else catname
+        if do_search and fks is not None:
+            #Checking the required filekeys aren't already downloaded...
+            localfks=[f.split("/")[-1] for f in glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"PR??????_????????_V0?00"))]
+            if np.all(np.isin(fks,localfks)):
+                do_search=False
         if do_search:
             these_cheops_obs=[]
             n_try=0
@@ -226,7 +233,10 @@ class chexo_model():
                 except:
                     raise ImportError("Cannot import Dace. Check it is installed, or initialise the class with `get_cheops=False` and add a lightcurve with `mod.add_cheops_lc`")
                 self.logger.debug("Attempting to get objects via the catalogue name")
-                these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"obj_id_catname":{"equal":[catname]},"file_key":{"contains":"_V030"}}))
+                if fks is None:
+                    these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"obj_id_catname":{"equal":[catname]},"file_key":{"contains":"_V030"}}))
+                else:
+                    these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"file_key":{"equal":["CH_"+f if f[:2]=="PR" else f for f in fks]}}))
                 try:
                     if len(these_cheops_obs)==0:
                         from dace_query.cheops import Cheops
@@ -258,10 +268,11 @@ class chexo_model():
                     self.logger.debug(all_cheops_obs)
                 n_try+=1
         else:
-            #Purely getting the filekeys from the output directory and using those
-            fks=[f.split("/")[-1] for f in glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"PR??????_????????_V0?00"))]
-            these_cheops_obs=pd.DataFrame({'file_key':fks})
-        #print(these_cheops_obs['file_key'].values)
+            #Purely getting the filekeys from the output directory and using those...
+            localfks=[f.split("/")[-1] for f in glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"PR??????_????????_V0?00"))]
+            these_cheops_obs=pd.DataFrame({'file_key':localfks})
+            #these_cheops_obs=these_cheops_obs.loc[np.in1d(fks,these_cheops_obs),:]
+        
         if fks is not None:
             fks=[f.replace("CH_","") for f in fks]
             these_cheops_obs=these_cheops_obs.loc[np.array([f.replace("CH_","") in fks for f in these_cheops_obs['file_key'].values])]
@@ -270,6 +281,7 @@ class chexo_model():
 
         assert these_cheops_obs.shape[0]>0, "No matches found in the CHEOPS database. Are you logged in via your .dacerc file?"
         for fk in these_cheops_obs['file_key'].values:
+            
             if "V020" in fk and fk.replace("V020","V030") in these_cheops_obs['file_key'].values:
                 self.logger.debug("Skipping "+fk+" as there's a better/newer reduction available.")
                 continue
@@ -282,16 +294,24 @@ class chexo_model():
             ifk=fk[3:] if fk[:3]=="CH_" else fk
             if hasattr(self,'monotools_lc'):
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from MonoTools file")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE, mag=self.monotools_lc.all_ids['tess']['data']['GAIAmag'], **kwargs)
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=PIPE, DRP=~PIPE, mag=self.monotools_lc.all_ids['tess']['data']['GAIAmag'], **kwargs)
             elif 'obj_mag_v' in these_cheops_obs.columns:
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from Dace catalogue")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE,
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=PIPE, DRP=~PIPE,
                                    mag=these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'obj_mag_v'], **kwargs)
                                    #self.monotools_lc.all_ids['tess']['data'][`'GAIAmag']
+            elif vmag is not None:
+                self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from Dace catalogue")
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=PIPE, DRP=~PIPE,
+                                   mag=vmag, **kwargs)
+                                   #self.monotools_lc.all_ids['tess']['data'][`'GAIAmag']
+
             else:
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; without magnitude")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=~PIPE, **kwargs)
-
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, PIPE=PIPE, DRP=(not PIPE), **kwargs)
+        if not PIPE:
+            #Need to make sure all the DRP apertures are the same
+            self.assess_cheops_drp_apertures()
 
     def filter_TOI(self,threshdist=3):
         """Load the TOI list (using `get_TOI`) and then find the specific case which either refers to the name given to this target, or to the RA/Dec (within threshdic arcsec)
@@ -464,8 +484,23 @@ class chexo_model():
                     continue
             raise ValueError("Unable to either run PIPE extractions or return PIPE fits file")
 
+    def assess_cheops_drp_apertures(self):
+        """Given all the potential DRP apertures, we want to make sure that the selection is uniform across ALL cheoops filekeys.
+        So this function reassess all the lightcurves, saving the flux statistics, and then
 
-    def add_cheops_lc(self, filekey, fileloc=None, download=True, ylims=(-15,15), overwrite=False,
+        Args:
+            """
+        all_aps=np.unique(np.hstack([list(self.chlcstats[f].keys()) for f in self.cheops_filekeys]))
+        best_ap_array=np.vstack([[1/(1/self.chlcstats[filekey][a]['rel_std']**2+1/self.chlcstats[filekey][a]['rel_med_abs_diff']**2)**0.5 for a in all_aps] for filekey in self.cheops_filekeys])
+        best_ap = all_aps[np.argmin(np.nanmedian(best_ap_array,axis=1))]
+        for fk in self.cheops_filekeys:
+            ix=self.lcs['cheops']['filekey']==fk
+            self.lcs['cheops'].loc[ix,'raw_flux']=self.chlcstats[fk][best_ap]['flux']
+            self.lcs['cheops'].loc[ix,'raw_flux_err']=self.chlcstats[fk][best_ap]['flux_err']
+            self.lcs['cheops'].loc[ix,'flux']=1e3*(self.lcs['cheops'].loc[ix,'raw_flux']/np.nanmedian(self.lcs['cheops'].loc[ix&self.lcs['cheops']['mask'].values,'raw_flux'])-1.0)
+            self.lcs['cheops'].loc[ix,'flux_err']=1e3*self.lcs['cheops'].loc[ix,'raw_flux_err']/np.nanmedian(self.lcs['cheops'].loc[ix&self.lcs['cheops']['mask'].values,'raw_flux'])
+
+    def add_cheops_lc(self, filekey, fileloc=None, download=True, ylims=(-15,15), overwrite=False, bg_percentile_thresh=80,
                       DRP=True, use_PIPE=False, PIPE_bin_src=None, mag=None, **kwargs):
         """AI is creating summary for add_cheops_lc
 
@@ -475,6 +510,7 @@ class chexo_model():
             download (bool, optional): Should we download from DACE?
             ylims (tuple, optional): Limits below/above which to cut (-15,15)
             overwrite (bool, optional): Whether to refit CHEOPs PIPE extraction
+            bg_percentile_thresh (float, optional): The pervcentile value in background flux to use as a limit above which data is masked (plus 35% margin)
             DRP (bool, optional): Is this a DRP file? Defaults to True.
             PIPE (bool, optional): Is this a PIPE file? Defaults to False.
             PIPE_bin_src (int, optional): If this is a PIPE file with two stars (ie binary model) which should we model? Defaults to None.
@@ -489,6 +525,7 @@ class chexo_model():
         self.update(**kwargs)
 
         assert DRP^use_PIPE, "Must have either DRP or PIPE flagged"
+
         out_dir=os.path.join(self.save_file_loc,self.name.replace(" ","_"))
         
         if fileloc is None and download:
@@ -499,7 +536,7 @@ class chexo_model():
                     self.logger.debug("Trying to download "+filekey+" from DACE")
                     if not os.path.isdir(os.path.join(out_dir,filekey)):
                         #Downloading Cheops data:
-                        if self.use_PIPE:
+                        if use_PIPE:
                             self.logger.info("Downloading "+filekey+" with Dace to "+out_dir)
                             Cheops.download('all', {'file_key': {'equal':["CH_"+str(filekey)]}},
                                             output_directory=out_dir, 
@@ -524,7 +561,7 @@ class chexo_model():
                     n_attempts+=1
             assert os.path.isdir(os.path.join(out_dir,filekey)), "Unable to download filekey "+filekey+" using Dace."
         
-        if self.use_PIPE and ((fileloc is None) or (os.path.isdir(fileloc)) or overwrite) :
+        if use_PIPE and ((fileloc is None) or (os.path.isdir(fileloc)) or overwrite) :
             self.logger.debug("Running PIPE on "+filekey)
             fileloc = self.run_PIPE(out_dir, filekey, mag, **kwargs)
             self.logger.debug("fileloc="+fileloc)
@@ -534,7 +571,7 @@ class chexo_model():
         if "cheops" not in self.lcs:
             self.lcs["cheops"] = pd.DataFrame()
         
-        if self.use_PIPE:
+        if use_PIPE:
             binchar=str(int(PIPE_bin_src)) if PIPE_bin_src is not None else ''
             sources={'time':'BJD_TIME', 'flux':'FLUX'+binchar, 'flux_err':'FLUXERR'+binchar, 
                      'bg':'BG', 'centroidx':'XC'+binchar,'phi':'ROLL', 
@@ -543,6 +580,8 @@ class chexo_model():
             
             sources.update({'U'+str(int(nPC)):'U'+str(int(nPC)) for nPC in range(0,9)})
         elif DRP:
+            if not hasattr(self,'chlcstats'):
+                self.chlcstats={}
             self.logger.debug("Getting DRP LCs. Filekey="+filekey)
             v3list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-*V0300.fits"))
             if len(v3list)==0:
@@ -553,7 +592,7 @@ class chexo_model():
             else:
                 self.logger.debug("Need to find the optimal aperture... Using 90th-10th percentile of flux to find lowest variability. Filekey="+filekey)
                 v3dic={}
-                lcstats={}
+                self.chlcstats[filekey]={}
                 aps=[]
                 for v in v3list:
                     ap=v.split("-R")[-1].split("_")[0]
@@ -562,10 +601,11 @@ class chexo_model():
                     f=fits.open(v)
                     highlow=np.nanpercentile(f[1].data['FLUX'],[2.5,97.5])
                     highlowcutmask=(f[1].data['FLUX']>highlow[0])&(f[1].data['FLUX']<highlow[1])&np.isfinite(f[1].data['FLUX'])
-                    lcstats[ap] = {'medflux':np.nanmedian(f[1].data['FLUX'][highlowcutmask]), 'std':np.nanstd(f[1].data['FLUX'][highlowcutmask])}
-                    lcstats[ap]['rel_std'] = np.nanstd(f[1].data['FLUX'][highlowcutmask]/lcstats[ap]['medflux'])
-                    lcstats[ap]['rel_med_abs_diff'] = np.nanmedian(abs(np.diff(f[1].data['FLUX'][highlowcutmask]/lcstats[ap]['medflux'])))
-                best=aps[np.argmin([1/(1/lcstats[a]['rel_std']**2+1/lcstats[a]['rel_med_abs_diff']**2)**0.5 for a in v3dic])]
+                    self.chlcstats[filekey][ap] = {'file':v,'flux':f[1].data['FLUX'],'flux_err':f[1].data['FLUXERR'],'aperture':ap,
+                                                   'medflux':np.nanmedian(f[1].data['FLUX'][highlowcutmask]), 'std':np.nanstd(f[1].data['FLUX'][highlowcutmask])}
+                    self.chlcstats[filekey][ap]['rel_std'] = np.nanstd(f[1].data['FLUX'][highlowcutmask]/self.chlcstats[filekey][ap]['medflux'])
+                    self.chlcstats[filekey][ap]['rel_med_abs_diff'] = np.nanmedian(abs(np.diff(f[1].data['FLUX'][highlowcutmask]/self.chlcstats[filekey][ap]['medflux'])))
+                best=aps[np.argmin([1/(1/self.chlcstats[filekey][a]['rel_std']**2+1/self.chlcstats[filekey][a]['rel_med_abs_diff']**2)**0.5 for a in v3dic])]
                 fileloc = v3dic[best]
                 
             sources={'time':'BJD_TIME', 'flux':'FLUX', 'flux_err':'FLUXERR', 
@@ -590,7 +630,7 @@ class chexo_model():
                     iche['raw_flux_err']=iche[s].values
                     iche[s]=(iche[s].values/np.nanmedian(f[1].data[sources['flux']]))*1000
                 if s=='bg':
-                    bgthresh=np.percentile(iche['bg'].values,95)*1.5
+                    bgthresh=np.percentile(iche['bg'].values,bg_percentile_thresh)*1.35
                 if s=='phi':
                     if hasattr(self,'radec') and self.radec is not None:
                         moon_coo = get_body('moon', Time(iche['time'],format='jd',scale='tdb'))
@@ -1151,18 +1191,18 @@ class chexo_model():
         for var in self.init_cheops_linear_decorr_pars+self.init_cheops_quad_decorr_pars:
             if var in self.lcs["cheops"].columns:
                 self.logger.debug(str(var)+fk)
-                self.norm_cheops_dat[fk][var]=(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values-np.nanmedian(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values))/np.nanstd(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values)
+                self.norm_cheops_dat[fk][var]=np.nan_to_num((self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values-np.nanmedian(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values))/np.nanstd(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var].values))
             elif var[:3]=='sin':
                 if var[3] not in ['1','2','3','4']:
                     self.logger.warning(str(var)+str(var[3])+"- Must have a number in the cos/sin parameter name to represent the harmonic, e.g. cos1phi or sin3phi")
                     var=var[:3]+"1"+var[3:]
                 #self.norm_cheops_dat[fk]
-                self.norm_cheops_dat[fk][var]=np.sin(float(int(var[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var[-3:]].values*np.pi/180)
+                self.norm_cheops_dat[fk][var]=np.nan_to_num(np.sin(float(int(var[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var[-3:]].values*np.pi/180))
             elif var[:3]=='cos':
                 if var[3] not in ['1','2','3','4']:
                     self.logger.warning(str(var)+str(var[3])+"- Must have a number in the cos/sin parameter name to represent the harmonic, e.g. cos1phi or sin3phi")
                     var=var[:3]+"1"+var[3:]
-                self.norm_cheops_dat[fk][var]=np.cos(float(int(var[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var[-3:]].values*np.pi/180)
+                self.norm_cheops_dat[fk][var]=np.nan_to_num(np.cos(float(int(var[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],var[-3:]].values*np.pi/180))
         #self.logger.debug(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl"),os.path.exists(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl")),overwrite)
         if not overwrite and os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl")):
             self.cheops_init_trace[savefname[1:]]=pickle.load(open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"rb"))
@@ -1354,7 +1394,7 @@ class chexo_model():
         for fk in self.cheops_filekeys:
             self.logger.info("Performing Cheops-only minimisation with all detrending params for filekey "+fk)
             #Launching a PyMC3 model
-            tracename = self.cheops_only_model(fk, include_transit=True, force_no_dydt=force_no_dydt,**kwargs)
+            tracename = self.cheops_only_model(fk, include_transit=self.planets!={}, force_no_dydt=force_no_dydt,**kwargs)
 
             var_names=[var for var in self.cheops_init_trace[tracename].posterior if '__' not in var and np.product(self.cheops_init_trace[tracename].posterior[var].shape)<6*np.product(self.cheops_init_trace[tracename].posterior['cheops_logs'].shape)]
             self.init_chefit_summaries[fk]=pm.summary(self.cheops_init_trace[tracename], var_names=var_names,round_to=7)
@@ -1471,7 +1511,7 @@ class chexo_model():
             self.lc_fit={}
 
         #making the masked cheops lightcurve in the lc_fit array.
-        self.lc_fit['cheops']=self.lcs["cheops"].loc[self.lcs["cheops"]["mask"]]
+        self.lc_fit['cheops']=self.lcs["cheops"].loc[self.lcs["cheops"]["mask"].values]
         #Stolen from pycheops (TBD):
         # if (dfdsinphi != 0 or dfdsin2phi != 0 or dfdsin3phi != 0 or
         #     dfdcosphi != 0 or dfdcos2phi != 0 or dfdcos3phi != 0):
@@ -1649,203 +1689,204 @@ class chexo_model():
             #             Contamination
             # -------------------------------------------
             # Using the detected companion's I and V mags to constrain Cheops and TESS dilution:
-            if self.fit_contam:
-                self.model_params['deltaImag_contam'] = pm.Uniform("deltaImag_contam", upper=12, lower=2.5)
-                self.model_params['tess_mult'] = pm.Deterministic("tess_mult",(1+tt.power(2.511,-1*self.model_params['deltaImag_contam']))) #Factor to multiply normalised lightcurve by
-                if 'k2' in self.lcs or 'kepler' in self.lcs or "cheops" in self.lcs:
-                    self.model_params['deltaVmag_contam'] = pm.Uniform("deltaVmag_contam", upper=12, lower=2.5)
-                    self.model_params['cheops_mult'] = pm.Deterministic("cheops_mult",(1+tt.power(2.511,-1*self.model_params['deltaVmag_contam']))) #Factor to multiply normalised lightcurve by
-            else:
-                for scope in self.lcs:
-                    self.model_params[scope+'_mult']=1.0
-
-            self.model_params['u_stars']={}
-            for scope in self.ld_dists:
-                if self.constrain_lds:
-                    self.model_params['u_stars'][scope] = pm.Bound(pm.Normal, lower=0.0, upper=1.0)("u_star_"+scope, 
-                                                                    mu=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1),
-                                                                    sd=np.clip(np.nanstd(self.ld_dists[scope],axis=0),0.1,1.0), 
-                                                                    shape=2, testval=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1))
+            if len(self.planets)>0:
+                if self.fit_contam:
+                    self.model_params['deltaImag_contam'] = pm.Uniform("deltaImag_contam", upper=12, lower=2.5)
+                    self.model_params['tess_mult'] = pm.Deterministic("tess_mult",(1+tt.power(2.511,-1*self.model_params['deltaImag_contam']))) #Factor to multiply normalised lightcurve by
+                    if 'k2' in self.lcs or 'kepler' in self.lcs or "cheops" in self.lcs:
+                        self.model_params['deltaVmag_contam'] = pm.Uniform("deltaVmag_contam", upper=12, lower=2.5)
+                        self.model_params['cheops_mult'] = pm.Deterministic("cheops_mult",(1+tt.power(2.511,-1*self.model_params['deltaVmag_contam']))) #Factor to multiply normalised lightcurve by
                 else:
-                    self.model_params['u_stars'][scope] = xo.distributions.QuadLimbDark("u_star_"+scope, testval=np.array([0.3, 0.2]))
-            # -------------------------------------------
-            # Initialising parameter dicts for each planet
-            # -------------------------------------------
-            self.model_params['orbit']={}
-            self.model_params['t0']={};self.model_params['P']={};self.model_params['vels']={};self.model_params['tdur']={}
-            self.model_params['b']={};self.model_params['rpl']={};self.model_params['logror']={};self.model_params['ror']={}
-            self.model_params['a_Rs']={};self.model_params['sma']={};self.model_params['S_in']={};self.model_params['Tsurf_p']={}
-            min_ps={pl:self.planets[pl]['period']*(1-1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
-            max_ps={pl:self.planets[pl]['period']*(1+1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
-            self.logger.debug([min_ps,max_ps,[self.planets[pl]['period'] for pl in self.planets],np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit]))])
-            if self.fit_ttvs or self.split_periods is not None:
-                self.model_params['transit_times']={}
-            if self.split_periods is not None:
-                self.model_params['split_t0']={pl:{} for pl in self.planets}
-                self.model_params['split_P']={pl:{} for pl in self.planets}
+                    for scope in self.lcs:
+                        self.model_params[scope+'_mult']=1.0
 
-            if hasattr(self,'rvs'):
-                self.model_params['logK']={};self.model_params['K']={};self.model_params['logMp']={};self.model_params['Mp']={};self.model_params['rho_p']={}
-                self.model_params['vrad_x']={};self.model_params['vrad_t']={}
-            if not self.assume_circ:
-                self.model_params['ecc']={};self.model_params['omega']={}
-
-            for pl in self.planets:
+                self.model_params['u_stars']={}
+                for scope in self.ld_dists:
+                    if self.constrain_lds:
+                        self.model_params['u_stars'][scope] = pm.Bound(pm.Normal, lower=0.0, upper=1.0)("u_star_"+scope, 
+                                                                        mu=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1),
+                                                                        sd=np.clip(np.nanstd(self.ld_dists[scope],axis=0),0.1,1.0), 
+                                                                        shape=2, testval=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1))
+                    else:
+                        self.model_params['u_stars'][scope] = xo.distributions.QuadLimbDark("u_star_"+scope, testval=np.array([0.3, 0.2]))
                 # -------------------------------------------
-                #                  Orbits
+                # Initialising parameter dicts for each planet
                 # -------------------------------------------
+                self.model_params['orbit']={}
+                self.model_params['t0']={};self.model_params['P']={};self.model_params['vels']={};self.model_params['tdur']={}
+                self.model_params['b']={};self.model_params['rpl']={};self.model_params['logror']={};self.model_params['ror']={}
+                self.model_params['a_Rs']={};self.model_params['sma']={};self.model_params['S_in']={};self.model_params['Tsurf_p']={}
+                min_ps={pl:self.planets[pl]['period']*(1-1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
+                max_ps={pl:self.planets[pl]['period']*(1+1.5*self.timing_sd_durs*self.planets[pl]['tdur']/(np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit])))) for pl in self.planets}
+                self.logger.debug([min_ps,max_ps,[self.planets[pl]['period'] for pl in self.planets],np.ptp(np.hstack([self.lc_fit[scope]['time'] for scope in self.lc_fit]))])
+                if self.fit_ttvs or self.split_periods is not None:
+                    self.model_params['transit_times']={}
+                if self.split_periods is not None:
+                    self.model_params['split_t0']={pl:{} for pl in self.planets}
+                    self.model_params['split_P']={pl:{} for pl in self.planets}
 
-                if self.planets[pl]['n_trans']>=2 and (self.fit_ttvs or (self.split_periods is not None and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']))):
-                    #To model TTVS, we need >2 transits. Only split period planets which do not have all the transits in one bin must be considered here:
-
-                    #Initialising transit times:
-                    # self.model_params['transit_times'][pl]=pm.Uniform("transit_times_"+pl, 
-                    #                                                     upper=self.planets[pl]['init_transit_times']+self.planets[pl]['tdur']*self.timing_sd_durs,
-                    #                                                     lower=self.planets[pl]['init_transit_times']-self.planets[pl]['tdur']*self.timing_sd_durs,
-                    #                                                     shape=len(self.planets[pl]['init_transit_times']), testval=self.planets[pl]['init_transit_times'])
-                    if self.fit_ttvs:
-                        self.model_params['transit_times'][pl]=[]
-                        for i in range(len(self.planets[pl]['init_transit_times'])):
-                            if self.ttv_prior.lower()=='uniform':
-                                self.model_params['transit_times'][pl].append(pm.Uniform("transit_times_"+pl+"_"+str(i), 
-                                                                                upper=self.planets[pl]['init_transit_times'][i]+self.planets[pl]['tdur']*self.timing_sd_durs,
-                                                                                lower=self.planets[pl]['init_transit_times'][i]-self.planets[pl]['tdur']*self.timing_sd_durs,
-                                                                                testval=self.planets[pl]['init_transit_times'][i]))
-                            elif self.ttv_prior.lower()=='normal':
-                                self.model_params['transit_times'][pl].append(pm.Normal("transit_times_"+pl+"_"+str(i), 
-                                                                                mu=self.planets[pl]['init_transit_times'][i],sigma=self.planets[pl]['tdur']*self.timing_sd_durs,
-                                                                                testval=self.planets[pl]['init_transit_times'][i]))
-                            elif self.ttv_prior.lower()=='boundnormal':
-                                self.model_params['transit_times'][pl].append(pm.Bound(pm.Normal, 
-                                                                                       lower=self.planets[pl]['init_transit_times'][i]-self.planets[pl]['tdur']*2*self.timing_sd_durs,
-                                                                                       upper=self.planets[pl]['init_transit_times'][i]+self.planets[pl]['tdur']*2*self.timing_sd_durs)("transit_times_"+pl+"_"+str(i), 
-                                                                                                mu=self.planets[pl]['init_transit_times'][i],
-                                                                                                sigma=self.planets[pl]['tdur']*self.timing_sd_durs,
-                                                                                                testval=self.planets[pl]['init_transit_times'][i]))
- 
-
-                    elif self.split_periods is not None:
-                        self.model_params['transit_times'][pl]=[]
-                        #Splitting periods into smaller periods of 3 or 4 transits.
-                        #split_periods must be {pl:[[0,1,2],[3,4,5],[6,7,8,9]]} <- i.e. transit indexes split into groups
-                        assert np.all(np.hstack(self.split_periods[pl])==np.arange(self.planets[pl]['n_trans'])),"split_periods must be a dict where all transits are split into groups by index - we have "+",".join(list(np.hstack(self.split_periods[pl]).astype(str)))+" but we need "+str(self.planets[pl]['n_trans'])+" transits at epochs "+",".join(list(self.planets[pl]['init_transit_times'].astype(str)))
-                        for ngroup,group in enumerate(self.split_periods[pl]):
-                            self.model_params['split_t0'][pl][ngroup]=pm.Normal("split_t0_"+pl+"_"+str(ngroup), mu=self.planets[pl]['init_transit_times'][self.split_periods[pl][ngroup][0]], 
-                                                                  sd=2*self.planets[pl]['tcen_err'])
-                            self.model_params['split_P'][pl][ngroup]=pm.Bound(pm.Normal, lower=min_ps[pl], upper=max_ps[pl])("split_P_"+pl+"_"+str(ngroup),
-                                                                        mu=self.planets[pl]['period'],
-                                                                        sd=np.clip(self.planets[pl]['period_err'],0,(max_ps[pl]-self.planets[pl]['period'])))
-                            for ni in group:
-                                n_trans_diff=self.planets[pl]['init_transit_inds'][ni]-self.planets[pl]['init_transit_inds'][group[0]]
-                                self.model_params['transit_times'][pl].append(pm.Deterministic("transit_times_"+pl+"_"+str(ni),
-                                                                                               self.model_params['split_t0'][pl][ngroup]+self.model_params['split_P'][pl][ngroup]*n_trans_diff))
-                                
-
-                    #self.model_params['transit_times'][pl].append(pm.Normal("transit_times_"+pl, mu=self.planets[pl]['init_transit_times'], sd=self.planets[pl]['tdur']*self.timing_sd_durs,
-                    #                                                        shape=len(self.planets[pl]['init_transit_times']), testval=self.planets[pl]['init_transit_times']))
-                else:
-                    self.model_params['t0'][pl] = pm.Normal("t0_"+pl, mu=self.planets[pl]['tcen'], sd=2*self.planets[pl]['tcen_err'],
-                                                            testval=np.random.normal(self.planets[pl]['tcen'],1e-6))
-                    self.model_params['P'][pl] = pm.Bound(pm.Normal, lower=min_ps[pl], upper=max_ps[pl])("P_"+pl,
-                                mu=self.planets[pl]['period'],sd=np.clip(self.planets[pl]['period_err'],0,(max_ps[pl]-self.planets[pl]['period'])),
-                                testval=np.random.normal(self.planets[pl]['period'],1e-6))
-
-                # Wide log-normal prior for semi-amplitude
                 if hasattr(self,'rvs'):
-                    if self.rv_mass_prior=='logK':
-                        self.model_params['logK'][pl] = pm.Normal("logK_"+pl, mu=-1, sd=10, testval=1.5)
-                        self.model_params['K'][pl] =pm.Deterministic("K_"+pl,tt.exp(self.model_params['logK'][pl]))
-                    elif self.rv_mass_prior=='K':
-                        self.model_params['K'][pl] = pm.Normal("K_"+pl, mu=2, sd=1, testval=1.5)
-                        self.model_params['logK'][pl] =pm.Deterministic("logK_"+pl,tt.log(self.model_params['K'][pl]))
-                    elif self.rv_mass_prior=='popMp':
-                        if len(self.planets)>1:
-                            rads=np.array([109.2*self.planets[pl]['rprs']*self.Rstar[0] for pl in self.planets])
-                            mu_mps = 5.75402469 - (rads<=12.2)*(rads>=1.58)*(4.67363091 -0.38348534*rads) - \
-                                                                    (rads<1.58)*(5.81943841-3.81604756*np.log(rads))
-                            sd_mps= (rads<=8)*(0.07904372*rads+0.24318296) + (rads>8)*(0-0.02313261*rads+1.06765343)
-                            self.model_params['logMp'][pl] = pm.Normal('logMp_'+pl,mu=mu_mps,sd=sd_mps)
-                        else:
-                            rad=109.2*self.planets[pl]['rprs']*self.Rstar[0]
-                            mu_mps = 5.75402469 - (rad<=12.2)*(rad>=1.58)*(4.67363091 -0.38348534*rad) - \
-                                                                    (rad<1.58)*(5.81943841-3.81604756*np.log(rad))
-                            sd_mps= (rad<=8)*(0.07904372*rad+0.24318296) + (rad>8)*(0-0.02313261*rad+1.06765343)
-                            self.model_params['logMp'][pl] = pm.Normal('logMp_'+pl,mu=mu_mps,sd=sd_mps)
-                # Eccentricity & argument of periasteron
+                    self.model_params['logK']={};self.model_params['K']={};self.model_params['logMp']={};self.model_params['Mp']={};self.model_params['rho_p']={}
+                    self.model_params['vrad_x']={};self.model_params['vrad_t']={}
                 if not self.assume_circ:
-                    BoundedBeta = pm.Bound(pm.Beta, lower=1e-5, upper=1-1e-5)
-                    self.model_params['ecc'][pl] = BoundedBeta("ecc_"+pl, alpha=0.867 ,beta=3.03, testval=0.05)
-                    self.model_params['omega'][pl] = pmx.Angle("omega_"+pl)
-                '''
-                #This was to model a non-transiting companion:
-                P_nontran = pm.Normal("P_nontran", mu=27.386209624, sd=2*0.04947295)
-                logK_nontran = pm.Normal("logK_nontran", mu=2,sd=10, testval=2)
-                Mpsini_nontran = pm.Deterministic("Mp_nontran", tt.exp(logK_nontran) * 28.439**-1 * Ms**(2/3) * (P_nontran/365.25)**(1/3) * 317.8)
-                t0_nontran = pm.Uniform("t0_nontran", lower=np.nanmedian(rv_x)-27.386209624*0.55, upper=np.nanmedian(rv_x)+27.386209624*0.55)
-                '''
-                if self.tight_depth_prior:
-                    self.model_params['logror'][pl] = pm.Normal("logror_"+pl, mu=np.log(np.sqrt(self.planets[pl]['depth'])), sd=0.2)
-                else:
-                    self.model_params['logror'][pl] = pm.Uniform("logror_"+pl, lower=np.log(0.001), upper=np.log(0.1), 
-                                                                testval=np.log(np.sqrt(self.planets[pl]['depth'])))
+                    self.model_params['ecc']={};self.model_params['omega']={}
 
-                self.model_params['ror'][pl] = pm.Deterministic("ror_"+pl,tt.exp(self.model_params['logror'][pl]))
-                self.model_params['rpl'][pl] = pm.Deterministic("rpl_"+pl,109.1*self.model_params['ror'][pl]*self.model_params['Rs'])
-                self.model_params['b'][pl] = xo.distributions.ImpactParameter("b_"+pl, ror=self.model_params['ror'][pl], testval=self.planets[pl]['b'])
-                
-                if (self.fit_ttvs or self.split_periods is not None) and self.planets[pl]['n_trans']>2 and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']):
-                    if self.assume_circ:
-                        self.model_params['orbit'][pl] = xo.orbits.TTVOrbit(b=[self.model_params['b'][pl]], 
-                                                        transit_times=[self.model_params['transit_times'][pl]], 
-                                                        transit_inds=[self.planets[pl]['init_transit_inds']], 
-                                                        r_star=self.model_params['Rs'], 
-                                                        m_star=self.model_params['Ms'])
+                for pl in self.planets:
+                    # -------------------------------------------
+                    #                  Orbits
+                    # -------------------------------------------
+
+                    if self.planets[pl]['n_trans']>=2 and (self.fit_ttvs or (self.split_periods is not None and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']))):
+                        #To model TTVS, we need >2 transits. Only split period planets which do not have all the transits in one bin must be considered here:
+
+                        #Initialising transit times:
+                        # self.model_params['transit_times'][pl]=pm.Uniform("transit_times_"+pl, 
+                        #                                                     upper=self.planets[pl]['init_transit_times']+self.planets[pl]['tdur']*self.timing_sd_durs,
+                        #                                                     lower=self.planets[pl]['init_transit_times']-self.planets[pl]['tdur']*self.timing_sd_durs,
+                        #                                                     shape=len(self.planets[pl]['init_transit_times']), testval=self.planets[pl]['init_transit_times'])
+                        if self.fit_ttvs:
+                            self.model_params['transit_times'][pl]=[]
+                            for i in range(len(self.planets[pl]['init_transit_times'])):
+                                if self.ttv_prior.lower()=='uniform':
+                                    self.model_params['transit_times'][pl].append(pm.Uniform("transit_times_"+pl+"_"+str(i), 
+                                                                                    upper=self.planets[pl]['init_transit_times'][i]+self.planets[pl]['tdur']*self.timing_sd_durs,
+                                                                                    lower=self.planets[pl]['init_transit_times'][i]-self.planets[pl]['tdur']*self.timing_sd_durs,
+                                                                                    testval=self.planets[pl]['init_transit_times'][i]))
+                                elif self.ttv_prior.lower()=='normal':
+                                    self.model_params['transit_times'][pl].append(pm.Normal("transit_times_"+pl+"_"+str(i), 
+                                                                                    mu=self.planets[pl]['init_transit_times'][i],sigma=self.planets[pl]['tdur']*self.timing_sd_durs,
+                                                                                    testval=self.planets[pl]['init_transit_times'][i]))
+                                elif self.ttv_prior.lower()=='boundnormal':
+                                    self.model_params['transit_times'][pl].append(pm.Bound(pm.Normal, 
+                                                                                        lower=self.planets[pl]['init_transit_times'][i]-self.planets[pl]['tdur']*2*self.timing_sd_durs,
+                                                                                        upper=self.planets[pl]['init_transit_times'][i]+self.planets[pl]['tdur']*2*self.timing_sd_durs)("transit_times_"+pl+"_"+str(i), 
+                                                                                                    mu=self.planets[pl]['init_transit_times'][i],
+                                                                                                    sigma=self.planets[pl]['tdur']*self.timing_sd_durs,
+                                                                                                    testval=self.planets[pl]['init_transit_times'][i]))
+    
+
+                        elif self.split_periods is not None:
+                            self.model_params['transit_times'][pl]=[]
+                            #Splitting periods into smaller periods of 3 or 4 transits.
+                            #split_periods must be {pl:[[0,1,2],[3,4,5],[6,7,8,9]]} <- i.e. transit indexes split into groups
+                            assert np.all(np.hstack(self.split_periods[pl])==np.arange(self.planets[pl]['n_trans'])),"split_periods must be a dict where all transits are split into groups by index - we have "+",".join(list(np.hstack(self.split_periods[pl]).astype(str)))+" but we need "+str(self.planets[pl]['n_trans'])+" transits at epochs "+",".join(list(self.planets[pl]['init_transit_times'].astype(str)))
+                            for ngroup,group in enumerate(self.split_periods[pl]):
+                                self.model_params['split_t0'][pl][ngroup]=pm.Normal("split_t0_"+pl+"_"+str(ngroup), mu=self.planets[pl]['init_transit_times'][self.split_periods[pl][ngroup][0]], 
+                                                                    sd=2*self.planets[pl]['tcen_err'])
+                                self.model_params['split_P'][pl][ngroup]=pm.Bound(pm.Normal, lower=min_ps[pl], upper=max_ps[pl])("split_P_"+pl+"_"+str(ngroup),
+                                                                            mu=self.planets[pl]['period'],
+                                                                            sd=np.clip(self.planets[pl]['period_err'],0,(max_ps[pl]-self.planets[pl]['period'])))
+                                for ni in group:
+                                    n_trans_diff=self.planets[pl]['init_transit_inds'][ni]-self.planets[pl]['init_transit_inds'][group[0]]
+                                    self.model_params['transit_times'][pl].append(pm.Deterministic("transit_times_"+pl+"_"+str(ni),
+                                                                                                self.model_params['split_t0'][pl][ngroup]+self.model_params['split_P'][pl][ngroup]*n_trans_diff))
+                                    
+
+                        #self.model_params['transit_times'][pl].append(pm.Normal("transit_times_"+pl, mu=self.planets[pl]['init_transit_times'], sd=self.planets[pl]['tdur']*self.timing_sd_durs,
+                        #                                                        shape=len(self.planets[pl]['init_transit_times']), testval=self.planets[pl]['init_transit_times']))
                     else:
-                        self.model_params['orbit'][pl] = xo.orbits.TTVOrbit(b=[self.model_params['b'][pl]], 
-                                                        transit_times=[self.model_params['transit_times'][pl]], 
-                                                        transit_inds=[self.planets[pl]['init_transit_inds']], 
-                                                        r_star=self.model_params['Rs'], 
-                                                        m_star=self.model_params['Ms'], 
-                                                        ecc=[self.model_params['ecc']], 
-                                                        omega=[self.model_params['omega']])
-                    self.model_params['t0'][pl] = pm.Deterministic("t0_"+pl, self.model_params['orbit'][pl].t0[0])
-                    self.model_params['P'][pl] = pm.Deterministic("P_"+pl, self.model_params['orbit'][pl].period[0])
-                else:
-                    # Then we define the orbit
-                    if self.assume_circ:
-                        self.model_params['orbit'][pl] = xo.orbits.KeplerianOrbit(r_star=self.model_params['Rs'], m_star=self.model_params['Ms'], 
-                                                        period=self.model_params['P'][pl], t0=self.model_params['t0'][pl], b=self.model_params['b'][pl])
+                        self.model_params['t0'][pl] = pm.Normal("t0_"+pl, mu=self.planets[pl]['tcen'], sd=2*self.planets[pl]['tcen_err'],
+                                                                testval=np.random.normal(self.planets[pl]['tcen'],1e-6))
+                        self.model_params['P'][pl] = pm.Bound(pm.Normal, lower=min_ps[pl], upper=max_ps[pl])("P_"+pl,
+                                    mu=self.planets[pl]['period'],sd=np.clip(self.planets[pl]['period_err'],0,(max_ps[pl]-self.planets[pl]['period'])),
+                                    testval=np.random.normal(self.planets[pl]['period'],1e-6))
+
+                    # Wide log-normal prior for semi-amplitude
+                    if hasattr(self,'rvs'):
+                        if self.rv_mass_prior=='logK':
+                            self.model_params['logK'][pl] = pm.Normal("logK_"+pl, mu=-1, sd=10, testval=1.5)
+                            self.model_params['K'][pl] =pm.Deterministic("K_"+pl,tt.exp(self.model_params['logK'][pl]))
+                        elif self.rv_mass_prior=='K':
+                            self.model_params['K'][pl] = pm.Normal("K_"+pl, mu=2, sd=1, testval=1.5)
+                            self.model_params['logK'][pl] =pm.Deterministic("logK_"+pl,tt.log(self.model_params['K'][pl]))
+                        elif self.rv_mass_prior=='popMp':
+                            if len(self.planets)>1:
+                                rads=np.array([109.2*self.planets[pl]['rprs']*self.Rstar[0] for pl in self.planets])
+                                mu_mps = 5.75402469 - (rads<=12.2)*(rads>=1.58)*(4.67363091 -0.38348534*rads) - \
+                                                                        (rads<1.58)*(5.81943841-3.81604756*np.log(rads))
+                                sd_mps= (rads<=8)*(0.07904372*rads+0.24318296) + (rads>8)*(0-0.02313261*rads+1.06765343)
+                                self.model_params['logMp'][pl] = pm.Normal('logMp_'+pl,mu=mu_mps,sd=sd_mps)
+                            else:
+                                rad=109.2*self.planets[pl]['rprs']*self.Rstar[0]
+                                mu_mps = 5.75402469 - (rad<=12.2)*(rad>=1.58)*(4.67363091 -0.38348534*rad) - \
+                                                                        (rad<1.58)*(5.81943841-3.81604756*np.log(rad))
+                                sd_mps= (rad<=8)*(0.07904372*rad+0.24318296) + (rad>8)*(0-0.02313261*rad+1.06765343)
+                                self.model_params['logMp'][pl] = pm.Normal('logMp_'+pl,mu=mu_mps,sd=sd_mps)
+                    # Eccentricity & argument of periasteron
+                    if not self.assume_circ:
+                        BoundedBeta = pm.Bound(pm.Beta, lower=1e-5, upper=1-1e-5)
+                        self.model_params['ecc'][pl] = BoundedBeta("ecc_"+pl, alpha=0.867 ,beta=3.03, testval=0.05)
+                        self.model_params['omega'][pl] = pmx.Angle("omega_"+pl)
+                    '''
+                    #This was to model a non-transiting companion:
+                    P_nontran = pm.Normal("P_nontran", mu=27.386209624, sd=2*0.04947295)
+                    logK_nontran = pm.Normal("logK_nontran", mu=2,sd=10, testval=2)
+                    Mpsini_nontran = pm.Deterministic("Mp_nontran", tt.exp(logK_nontran) * 28.439**-1 * Ms**(2/3) * (P_nontran/365.25)**(1/3) * 317.8)
+                    t0_nontran = pm.Uniform("t0_nontran", lower=np.nanmedian(rv_x)-27.386209624*0.55, upper=np.nanmedian(rv_x)+27.386209624*0.55)
+                    '''
+                    if self.tight_depth_prior:
+                        self.model_params['logror'][pl] = pm.Normal("logror_"+pl, mu=np.log(np.sqrt(self.planets[pl]['depth'])), sd=0.2)
                     else:
-                        self.model_params['orbit'][pl] = xo.orbits.KeplerianOrbit(r_star=self.model_params['Rs'], m_star=self.model_params['Ms'], period=self.model_params['P'][pl], 
-                                                        t0=self.model_params['t0'][pl], b=self.model_params['b'][pl], ecc=self.model_params['ecc'][pl], omega=self.model_params['omega'][pl])
-                
-                # -------------------------------------------
-                #           Derived planet params:
-                # -------------------------------------------
-                if hasattr(self,'rvs'):
+                        self.model_params['logror'][pl] = pm.Uniform("logror_"+pl, lower=np.log(0.001), upper=np.log(0.1), 
+                                                                    testval=np.log(np.sqrt(self.planets[pl]['depth'])))
+
+                    self.model_params['ror'][pl] = pm.Deterministic("ror_"+pl,tt.exp(self.model_params['logror'][pl]))
+                    self.model_params['rpl'][pl] = pm.Deterministic("rpl_"+pl,109.1*self.model_params['ror'][pl]*self.model_params['Rs'])
+                    self.model_params['b'][pl] = xo.distributions.ImpactParameter("b_"+pl, ror=self.model_params['ror'][pl], testval=self.planets[pl]['b'])
                     
-                    if self.rv_mass_prior!='popMp':
+                    if (self.fit_ttvs or self.split_periods is not None) and self.planets[pl]['n_trans']>2 and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']):
                         if self.assume_circ:
-                            self.model_params['Mp'][pl] = pm.Deterministic("Mp_"+pl, tt.exp(self.model_params['logK'][pl]) * 28.439**-1 * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8)
+                            self.model_params['orbit'][pl] = xo.orbits.TTVOrbit(b=[self.model_params['b'][pl]], 
+                                                            transit_times=[self.model_params['transit_times'][pl]], 
+                                                            transit_inds=[self.planets[pl]['init_transit_inds']], 
+                                                            r_star=self.model_params['Rs'], 
+                                                            m_star=self.model_params['Ms'])
                         else:
-                            self.model_params['Mp'][pl] = pm.Deterministic("Mp_"+pl, tt.exp(self.model_params['logK'][pl]) * 28.439**-1 * (1-self.model_params['ecc'][pl]**2)**(0.5) * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8)
+                            self.model_params['orbit'][pl] = xo.orbits.TTVOrbit(b=[self.model_params['b'][pl]], 
+                                                            transit_times=[self.model_params['transit_times'][pl]], 
+                                                            transit_inds=[self.planets[pl]['init_transit_inds']], 
+                                                            r_star=self.model_params['Rs'], 
+                                                            m_star=self.model_params['Ms'], 
+                                                            ecc=[self.model_params['ecc']], 
+                                                            omega=[self.model_params['omega']])
+                        self.model_params['t0'][pl] = pm.Deterministic("t0_"+pl, self.model_params['orbit'][pl].t0[0])
+                        self.model_params['P'][pl] = pm.Deterministic("P_"+pl, self.model_params['orbit'][pl].period[0])
                     else:
-                        self.model_params['Mp'][pl] = pm.Deterministic("Mp_"+pl, tt.exp(self.model_params['logMp'][pl]))
+                        # Then we define the orbit
                         if self.assume_circ:
-                            self.model_params['K'][pl] = pm.Deterministic("K_"+pl, self.model_params['Mp'][pl] / (28.439**-1 * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8))
+                            self.model_params['orbit'][pl] = xo.orbits.KeplerianOrbit(r_star=self.model_params['Rs'], m_star=self.model_params['Ms'], 
+                                                            period=self.model_params['P'][pl], t0=self.model_params['t0'][pl], b=self.model_params['b'][pl])
                         else:
-                            self.model_params['K'][pl] = pm.Deterministic("K_"+pl, self.model_params['Mp'][pl] / (28.439**-1 * (1-self.model_params['ecc'][pl]**2)**(0.5) * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8))
-                        self.model_params['logK'][pl] = pm.Deterministic("logK_"+pl, tt.exp(self.model_params['K'][pl]))
-                    self.model_params['rho_p'][pl] = pm.Deterministic("rho_p_gcm3_"+pl,5.513*self.model_params['Mp'][pl]/self.model_params['rpl'][pl]**3)
-                
-                self.model_params['a_Rs'][pl]=pm.Deterministic("a_Rs_"+pl,self.model_params['orbit'][pl].a/self.model_params['Rs'])
-                self.model_params['sma'][pl]=pm.Deterministic("sma_"+pl,self.model_params['a_Rs'][pl]*0.00465)
-                self.model_params['S_in'][pl]=pm.Deterministic("S_in_"+pl,((695700000*self.model_params['Rs'])**2.*5.67e-8*self.model_params['Teff']**4)/(1.496e11*self.model_params['sma'][pl])**2.)
-                self.model_params['Tsurf_p'][pl]=pm.Deterministic("Tsurf_p_"+pl,(((695700000*self.model_params['Rs'])**2.*self.model_params['Teff']**4.*(1.-0.2))/(4*(1.496e11*self.model_params['sma'][pl])**2.))**(1./4.))
-                
-                #Getting the transit duration:
-                self.model_params['vels'][pl] = self.model_params['orbit'][pl].get_relative_velocity(self.model_params['t0'][pl])
-                self.model_params['tdur'][pl]=pm.Deterministic("tdur_"+pl,(2*self.model_params['Rs']*tt.sqrt((1+self.model_params['ror'][pl])**2-self.model_params['b'][pl]**2))/tt.sqrt(self.model_params['vels'][pl][0]**2 + self.model_params['vels'][pl][1]**2))
+                            self.model_params['orbit'][pl] = xo.orbits.KeplerianOrbit(r_star=self.model_params['Rs'], m_star=self.model_params['Ms'], period=self.model_params['P'][pl], 
+                                                            t0=self.model_params['t0'][pl], b=self.model_params['b'][pl], ecc=self.model_params['ecc'][pl], omega=self.model_params['omega'][pl])
+                    
+                    # -------------------------------------------
+                    #           Derived planet params:
+                    # -------------------------------------------
+                    if hasattr(self,'rvs'):
+                        
+                        if self.rv_mass_prior!='popMp':
+                            if self.assume_circ:
+                                self.model_params['Mp'][pl] = pm.Deterministic("Mp_"+pl, tt.exp(self.model_params['logK'][pl]) * 28.439**-1 * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8)
+                            else:
+                                self.model_params['Mp'][pl] = pm.Deterministic("Mp_"+pl, tt.exp(self.model_params['logK'][pl]) * 28.439**-1 * (1-self.model_params['ecc'][pl]**2)**(0.5) * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8)
+                        else:
+                            self.model_params['Mp'][pl] = pm.Deterministic("Mp_"+pl, tt.exp(self.model_params['logMp'][pl]))
+                            if self.assume_circ:
+                                self.model_params['K'][pl] = pm.Deterministic("K_"+pl, self.model_params['Mp'][pl] / (28.439**-1 * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8))
+                            else:
+                                self.model_params['K'][pl] = pm.Deterministic("K_"+pl, self.model_params['Mp'][pl] / (28.439**-1 * (1-self.model_params['ecc'][pl]**2)**(0.5) * self.model_params['Ms']**(2/3) * (self.model_params['P'][pl]/365.25)**(1/3) * 317.8))
+                            self.model_params['logK'][pl] = pm.Deterministic("logK_"+pl, tt.exp(self.model_params['K'][pl]))
+                        self.model_params['rho_p'][pl] = pm.Deterministic("rho_p_gcm3_"+pl,5.513*self.model_params['Mp'][pl]/self.model_params['rpl'][pl]**3)
+                    
+                    self.model_params['a_Rs'][pl]=pm.Deterministic("a_Rs_"+pl,self.model_params['orbit'][pl].a/self.model_params['Rs'])
+                    self.model_params['sma'][pl]=pm.Deterministic("sma_"+pl,self.model_params['a_Rs'][pl]*0.00465)
+                    self.model_params['S_in'][pl]=pm.Deterministic("S_in_"+pl,((695700000*self.model_params['Rs'])**2.*5.67e-8*self.model_params['Teff']**4)/(1.496e11*self.model_params['sma'][pl])**2.)
+                    self.model_params['Tsurf_p'][pl]=pm.Deterministic("Tsurf_p_"+pl,(((695700000*self.model_params['Rs'])**2.*self.model_params['Teff']**4.*(1.-0.2))/(4*(1.496e11*self.model_params['sma'][pl])**2.))**(1./4.))
+                    
+                    #Getting the transit duration:
+                    self.model_params['vels'][pl] = self.model_params['orbit'][pl].get_relative_velocity(self.model_params['t0'][pl])
+                    self.model_params['tdur'][pl]=pm.Deterministic("tdur_"+pl,(2*self.model_params['Rs']*tt.sqrt((1+self.model_params['ror'][pl])**2-self.model_params['b'][pl]**2))/tt.sqrt(self.model_params['vels'][pl][0]**2 + self.model_params['vels'][pl][1]**2))
 
             # -------------------------------------------
             #                    RVs:
@@ -1882,7 +1923,7 @@ class chexo_model():
                 if len(self.planets)>1:
                     self.model_params['rv_model_x'] = pm.Deterministic("rv_model_x", self.model_params['bkg_x'] + tt.sum([self.model_params['vrad_x'][pl] for pl in self.planets], axis=0))
                 else:
-                    self.model_params['rv_modelxt'] = pm.Deterministic("rv_model_x", self.model_params['bkg_x'] + self.model_params['vrad_x'][list(self.planets.keys())[0]])
+                    self.model_params['rv_model_x'] = pm.Deterministic("rv_model_x", self.model_params['bkg_x'] + self.model_params['vrad_x'][list(self.planets.keys())[0]])
 
                 '''vrad_t = pm.Deterministic("vrad_t",tt.stack([orbit.get_radial_velocity(rv_t, K=tt.exp(logK))[:,0],
                                                                 orbit.get_radial_velocity(rv_t, K=tt.exp(logK))[:,1],
@@ -1907,7 +1948,7 @@ class chexo_model():
             # -------------------------------------------
             #                 PHOT GP:
             # -------------------------------------------
-            if self.fit_gp:
+            if self.fit_gp and ('tess' in self.lcs or 'k2' in self.lcs or 'kepler' in self.lcs):
                 minmax={}
                 # Here we interpolate the histograms of the pre-trained GP samples as the input prior for each:
                 for scope in self.lcs:
@@ -2195,10 +2236,10 @@ class chexo_model():
                         if self.fit_phi_spline:
                             self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['spline_model'][fk], 
                                                                             sd=tt.sqrt(cheops_sigma2s[fk]), observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
-                        if self.fit_phi_gp and self.phi_model_type in ["common","split"] and len(self.cheops_filekeys)>1:
+                        elif self.fit_phi_gp and self.phi_model_type in ["common","split"] and len(self.cheops_filekeys)>1:
                             self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['gp_rollangle_model_phi'][fk][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting']], 
                                                                             sd=tt.sqrt(cheops_sigma2s[fk]), observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
-                        if not self.fit_phi_gp and not self.fit_phi_spline:
+                        elif not self.fit_phi_gp and not self.fit_phi_spline:
                             #In the case of the common roll angle on binned phi, we cannot use the gp marginal, so we do an "old fashioned" likelihood:
                             self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk], sd=tt.sqrt(cheops_sigma2s[fk]), 
                                                                             observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
@@ -2226,22 +2267,51 @@ class chexo_model():
                     self.model_params[scope+'_gp_model_x'] = pm.Deterministic(scope+"_gp_model_x", self.model_params[scope+'_gp'].predict(self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x'], t=self.lc_fit[scope]['time'].values, return_var=False))
                 elif scope!="cheops":
                     sigma2s[scope] = self.lc_fit[scope]['flux_err'].values ** 2 + tt.exp(self.model_params[scope+'_logs'])**2
-                    self.model_params[scope+'_llk'] = pm.Potential(scope+'_llk', -0.5 * tt.sum((self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x']) ** 2/sigma2s[scope] + np.log(sigma2s[scope])))
+                    self.model_params[scope+'_llk'] = pm.Potential(scope+'_llk', -0.5 * (self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x']) ** 2/sigma2s[scope] + np.log(sigma2s[scope]))
                     tt.printing.Print(scope+"_llk")(self.model_params[scope+'_llk'])
-                elif scope=="cheops":
-                    #Doing cheops-specific stuff here.
-                    self.logger.debug("NA")
+                #elif scope=="cheops":
+                #    #Doing cheops-specific stuff here.
+                #    self.logger.debug("NA")
+
             if hasattr(self,"rvs"):
                 rv_logjitter = pm.Normal("rv_logjitter",mu=np.nanmin(self.rvs['yerr'].values)-3,sd=3)
                 rv_sigma2 = self.rvs['yerr'].values ** 2 + tt.exp(rv_logjitter)**2
-                self.model_params['rv_llk'] = pm.Potential("rv_llk", -0.5 * tt.sum((self.rvs['y'].values - self.model_params['rv_model_x']) ** 2 / rv_sigma2 + np.log(rv_sigma2)))
+                self.model_params['rv_llk'] = pm.Potential("rv_llk", -0.5 * (self.rvs['y'].values - self.model_params['rv_model_x']) ** 2 / rv_sigma2 + np.log(rv_sigma2))
             #print(self.model.check_test_point())
             if 'cheops' in self.lcs:
+                # for npar,par in enumerate([self.model_params['cheops_llk'][par] for par in self.model_params['cheops_llk']]+[self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"]):
+                #     tt.printing.Print(str(npar))(par.shape)
+                # try:
+                #     print("axis=0")
+                #     tt.printing.Print("axis=1")(tt.stack([self.model_params['cheops_llk'][par] for par in self.model_params['cheops_llk']]+[self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"],axis=1))
+                #     print("worked?")
+                # except:
+                #     try:
+                #         print("axis=1")
+                #         tt.printing.Print("axis=0")(tt.stack([self.model_params['cheops_llk'][par] for par in self.model_params['cheops_llk']]+[self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"],axis=0))
+                #         print("worked?")
+                #     except:
+                #         try:
+                #             print("join?")
+                #             tt.printing.Print("axis=?")(tt.join([self.model_params['cheops_llk'][par] for par in self.model_params['cheops_llk']]+[self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"]))
+                #             print("worked?")
+                #         except:
+                #             print("concat?")
+                #             tt.printing.Print("axis=?")(tt.concatenate([self.model_params['cheops_llk'][par] for par in self.model_params['cheops_llk']]+[self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"]))
+                #             print("worked?")
+
                 self.model_params['log_likelihood'] = pm.Deterministic("log_likelihood",tt.concatenate([self.model_params['cheops_llk'][par] for par in self.model_params['cheops_llk']]+[self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"]))
             else:
-                self.model_params['log_likelihood'] = pm.Deterministic("log_likelihood",tt.concatenate([self.model_params[par] for par in self.model_params if "_llk" in par ]))
+                for npar,par in enumerate([self.model_params[par] for par in self.model_params if "_llk" in par and par!="cheops_llk"]):
+                    tt.printing.Print(str(npar))(par.shape)
+                try:
+                    tt.printing.Print(str(npar))(tt.stack([self.model_params[par] for par in self.model_params if "_llk" in par ],axis=0))
+                except:
+                    tt.printing.Print(str(npar))(tt.stack([self.model_params[par] for par in self.model_params if "_llk" in par ],axis=1))
 
-            self.pre_model_soln = pmx.optimize(vars = self.model_params['tess_logs'])
+                self.model_params['log_likelihood'] = pm.Deterministic("log_likelihood",tt.stack([self.model_params[par] for par in self.model_params if "_llk" in par ]))
+
+            self.pre_model_soln = pmx.optimize(vars = self.model_params[list(self.lcs.keys())[0]+'_logs'])
             #First try to find best-fit transit stuff:
             if not self.fit_ttvs:
                 #print([self.model_params[par][pl] for pl in self.planets for par in ['logror','P','t0']]+[self.model_params[par] for par in ['logs_tess','cheops_logs']])
@@ -2277,27 +2347,30 @@ class chexo_model():
             ivars=[self.model_params['b'][pl] for pl in self.planets]+[self.model_params['logror'][pl] for pl in self.planets]+[self.model_params[scope+'_logs'] for scope in self.lcs]
             if len(self.cheops_filekeys)>0:
                 ivars+=[self.model_params['cheops_logs']]
-            ivars+=[self.model_params['u_stars'][u] for u in self.model_params['u_stars']]
-            if self.fit_ttvs:
-                for pl in self.planets:
-                    if pl in self.model_params['transit_times']:
-                        ivars+=[self.model_params['transit_times'][pl][i] for i in range(len(self.model_params['transit_times'][pl]))]
-                    else:
-                        ivars+=[self.model_params['P'][pl],self.model_params['t0'][pl]]
-            elif self.split_periods is not None:
-                for pl in self.planets:
-                    if self.planets[pl]['n_trans']>2 and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']):
-                        ivars+=[self.model_params['split_P'][pl][i] for i in range(len(self.split_periods[pl]))]
-                        ivars+=[self.model_params['split_t0'][pl][i] for i in range(len(self.split_periods[pl]))]
-                    else:
-                        ivars+=[self.model_params['P'][pl],self.model_params['t0'][pl]]
+            if len(self.planets)>0:
+                ivars+=[self.model_params['u_stars'][u] for u in self.model_params['u_stars']]
+                if self.fit_ttvs:
+                    for pl in self.planets:
+                        if pl in self.model_params['transit_times']:
+                            ivars+=[self.model_params['transit_times'][pl][i] for i in range(len(self.model_params['transit_times'][pl]))]
+                        else:
+                            ivars+=[self.model_params['P'][pl],self.model_params['t0'][pl]]
+                elif self.split_periods is not None:
+                    for pl in self.planets:
+                        if self.planets[pl]['n_trans']>2 and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']):
+                            ivars+=[self.model_params['split_P'][pl][i] for i in range(len(self.split_periods[pl]))]
+                            ivars+=[self.model_params['split_t0'][pl][i] for i in range(len(self.split_periods[pl]))]
+                        else:
+                            ivars+=[self.model_params['P'][pl],self.model_params['t0'][pl]]
 
-            else:
-                ivars+=[self.model_params['t0'][pl] for pl in self.planets]+[self.model_params['P'][pl] for pl in self.planets]
-            if not self.assume_circ:
-                ivars+=[self.model_params['ecc'][pl] for pl in self.planets]+[self.model_params['omega'][pl] for pl in self.planets]
+                else:
+                    ivars+=[self.model_params['t0'][pl] for pl in self.planets]+[self.model_params['P'][pl] for pl in self.planets]
+                if not self.assume_circ:
+                    ivars+=[self.model_params['ecc'][pl] for pl in self.planets]+[self.model_params['omega'][pl] for pl in self.planets]
             if hasattr(self,'rvs'):
-                ivars+=[self.model_params['logK'][pl] for pl in self.planets]+[self.model_params['rv_offsets']]
+                if len(self.planets)>0:
+                    ivars+=[self.model_params['logK'][pl] for pl in self.planets]
+                ivars+=[self.model_params['rv_offsets']]
                 if self.npoly_rv>1:
                     ivars+=[self.model_params['rv_trend']]
             self.logger.debug(ivars)
@@ -2731,7 +2804,7 @@ class chexo_model():
             self.models_out['cheops']=pd.DataFrame()
             self.models_out['cheops_gap_models_out']=pd.DataFrame()
 
-            for col in ['time','flux','flux_err','phi','bg','centroidx','centroidy','deltaT','xoff','yoff','filekey','n_phi_model']:
+            for col in ['time','flux','flux_err','phi','bg','centroidx','centroidy','deltaT','xoff','yoff','filekey','n_phi_model','raw_flux_medium_offset']:
                 if col in self.lcs["cheops"].columns:
                     self.models_out['cheops'][col]=np.hstack([self.lcs["cheops"].loc[self.cheops_fk_mask[fk],col] for fk in self.cheops_filekeys])
             if self.fit_phi_gp:
@@ -2771,9 +2844,10 @@ class chexo_model():
 
                     if 'cheops_planets_x' in self.trace.posterior:
                         self.models_out['cheops']['cheops_allplmodel_'+p]=np.nanpercentile(np.sum(self.trace.posterior['cheops_planets_x'][:,:,self.lcs["cheops"]['mask'],:],axis=2),self.percentiles[p],axis=(0,1))
-                    else:
+                    elif len(self.planets)>0:
                         self.models_out['cheops']["cheops_allplmodel_"+p]=np.nanpercentile(np.sum(np.stack([self.trace.posterior['cheops_planets_x_'+pl].values[:,:,self.lcs["cheops"]['mask']] for pl in self.planets]),axis=0),self.percentiles[p],axis=(0,1))
-                    self.models_out['cheops_gap_models_out']["cheops_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace.posterior['cheops_planets_gaps_'+pl].values for pl in self.planets]),axis=2),self.percentiles[p],axis=(0,1))
+                    if len(self.planets)>0:
+                        self.models_out['cheops']["cheops_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace.posterior['cheops_planets_gaps_'+pl].values for pl in self.planets]),axis=2),self.percentiles[p],axis=(0,1))
             elif hasattr(self,'init_soln'):
                 p="med"
                 self.models_out['cheops']['cheops_lindetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk] for fk in self.cheops_filekeys])
@@ -2788,26 +2862,34 @@ class chexo_model():
                     else:
                         self.models_out['cheops']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_x_'+pl][self.lcs["cheops"]['mask']]
                     if 'cheops_planets_gaps_'+pl in self.init_soln:
-                        self.models_out['cheops_gap_models_out']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_gaps_'+pl]
+                        self.models_out['cheops']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_gaps_'+pl]
 
                 if 'cheops_planets_x' in self.init_soln:
                     self.models_out['cheops']['cheops_allplmodel_'+p]=np.sum(self.init_soln['cheops_planets_x'][self.lcs["cheops"]['mask'],:],axis=1)
-                else:
+                elif len(self.planets)>0:
                     self.models_out['cheops']['cheops_allplmodel_'+p]=np.sum(np.vstack([self.models_out['cheops']['cheops_'+pl+"model_"+p] for pl in self.planets]),axis=0)
-                self.models_out['cheops_gap_models_out']["cheops_allplmodel_"+p]=np.sum(np.vstack([self.init_soln['cheops_planets_gaps_'+pl] for pl in self.planets]),axis=0)
+                else:
+                    self.models_out['cheops']['cheops_allplmodel_'+p]=np.zeros_like(self.models_out['cheops']['time'])
+
+                
+                if len(self.planets)>0:
+                    self.models_out['cheops_gap_models_out']["cheops_allplmodel_"+p]=np.sum(np.vstack([self.init_soln['cheops_planets_gaps_'+pl] for pl in self.planets]),axis=0)
+                else:
+                    self.models_out['cheops_gap_models_out']["cheops_allplmodel_"+p]=np.zeros_like(self.models_out['cheops_gap_models_out']['time'])
         elif tracename not in self.models_out or overwrite:
             #We have intermediate CHEOPS trace which we want to save in the same format as the final CHEOPS trace above (i.e. for plotting)
             self.models_out[tracename]=pd.DataFrame()
             #self.models_out[tracename+'_gap_models_out']=pd.DataFrame()
             fks=self.cheops_filekeys if fk is None else [fk]
-            for col in ['time','flux','flux_err','filekey']:
+            for col in ['time','flux','flux_err','filekey','raw_flux_medium_offset']:
                 if col in self.lcs["cheops"].columns:
                     self.models_out[tracename][col]=np.hstack([self.lcs["cheops"].loc[self.cheops_fk_mask[fk],col] for fk in fks])
             if type(init_trace)==pm.backends.base.MultiTrace:
                 for p in self.percentiles:
                     self.models_out[tracename]['cheops_lindetrend_'+p]=np.hstack([np.nanpercentile(init_trace['cheops_flux_cor_'+fk],self.percentiles[p],axis=0) for fk in fks])
                     self.models_out[tracename]['cheops_alldetrend_'+p]=self.models_out[tracename]['cheops_lindetrend_'+p].values[:]
-                    self.models_out[tracename]["cheops_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                    if len(self.planets)>0:
+                        self.models_out[tracename]["cheops_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
                     for npl,pl in enumerate(self.planets):
                         if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
                             self.models_out[tracename]['cheops_'+pl+"model_"+p]=np.hstack([np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0) for fk in fks])
@@ -2819,6 +2901,7 @@ class chexo_model():
                 self.models_out[tracename]['cheops_lindetrend_'+p]=np.hstack([init_trace['cheops_flux_cor_'+fk] for fk in fks])
                 self.models_out[tracename]['cheops_alldetrend_'+p]=self.models_out[tracename]['cheops_lindetrend_'+p].values[:]
                 self.models_out[tracename]["cheops_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+
                 for npl,pl in enumerate(self.planets):
                     if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
                         self.models_out[tracename]['cheops_'+pl+"model_"+p]=np.hstack([np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0) for fk in fks])
@@ -3354,6 +3437,7 @@ class chexo_model():
             modfluxs={}
             modflux1sigs={}
             modflux2sigs={}
+            npl=0#In case there are no planets
             for npl,pl in enumerate(self.planets):
                 if np.any(self.models_out[tracename].loc[fk_ix,"cheops_"+pl+"model_med"]<-1e-5):
                     #print(np.shape(pl_time),self.chplmod[fk][pl][2].shape,as_pl_time.shape)
@@ -3432,17 +3516,67 @@ class chexo_model():
             save_suffix="" if save_suffix is None else save_suffix
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+save_suffix+"_cheops_plots"+save_suffix+"."+savetype),transparent=transparent)
     
-    def init_phot_plot_sects_noprior(self,src,n_gaps=5,typic_dist=15):
+    def plot_cheops_absphot(self,save=True,savetype='png',save_suffix=None):
+        #Plotting absolute photometry
+        self.lcs['cheops']['raw_flux_medium_offset'] = np.zeros(len(self.lcs['cheops']))
+        for fk in self.cheops_filekeys:
+            self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'raw_flux_medium_offset']=1000*(np.nanmedian(self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'raw_flux']/np.nanmedian(self.lcs['cheops']['raw_flux'])-1))
+        self.make_cheops_timeseries(overwrite=True)
+        assert 'raw_flux_medium_offset' in self.models_out['cheops'].columns, "Make Cheops Timeseries did not place raw_flux_medium_offset into out DF..."
+        sectinfo = self.init_phot_plot_sects_noprior('cheops', n_gaps=2, typic_dist=100, min_gap_thresh=0.6)
+        for ns,sectname in enumerate(sectinfo):
+            plt.subplot(len(sectinfo),1,ns+1)
+            sectinfo[sectname]['ix'] = (self.models_out['cheops']['time'].values>=sectinfo[sectname]['start'])&(self.models_out['cheops']['time'].values<=sectinfo[sectname]['end'])
+
+            #Plotting flux
+            plt.plot(self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'],
+                        self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux']+self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'raw_flux_medium_offset'],
+                        '.k',markersize=1.0,alpha=0.4,zorder=1)
+            binsect=bin_lc_segment(np.column_stack((self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'],
+                                                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux']+self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'raw_flux_medium_offset'],
+                                                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux_err'])),1/48)
+            plt.errorbar(binsect[:,0],binsect[:,1],yerr=binsect[:,2],fmt='.',color="C1",ecolor="C0",alpha=0.6,zorder=2)
+        
+            plt.xlim(sectinfo[sectname]['start']-1,sectinfo[sectname]['end']+1)
+            plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%d'))
+            
+            plt.ylim(np.min(self.models_out['cheops'].loc[:,'flux']+self.models_out['cheops'].loc[:,'raw_flux_medium_offset']),
+                     np.max(self.models_out['cheops'].loc[:,'flux']+self.models_out['cheops'].loc[:,'raw_flux_medium_offset']))
+
+            if ns==len(sectinfo)-1:
+                plt.xlabel("BJD")
+            plt.ylabel("Relative Flux [ppt]")
+        if save:
+            save_suffix="" if save_suffix is None else save_suffix
+            plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_absphotcheops_plot"+save_suffix+"."+savetype))
+
+
+    def init_phot_plot_sects_noprior(self, src, n_gaps=None, typic_dist=None, min_gap_thresh=0.02):
         """
-        Initialising photometric plot without any prior knowledge of the timing of gaps (i.e. not using pre-loaded TESS sector times)"""
+        Initialising photometric plot without any prior knowledge of the timing of gaps (i.e. not using pre-loaded TESS sector times).
+        Args:
+        - src (str) - 
+        - n_gaps -
+        - typic_dist - typical distance between gaps. Using TESS
+        - min_gap_thresh - Threshold in fractional gap length above which to cut (e.g. 0.01 = only cut gaps bigger than 1% of time)
+        """
+        
+        if typic_dist is None:
+            typic_dist=75 if src.lower()=='k2' else 15 #Assuming TESS
+        if n_gaps is None:
+            n_gaps=1 if src.lower()=='k2' else 5 #Assuming TESS
         sort_time=np.sort(self.lcs[src].loc[np.isfinite(self.lcs[src]['time'].values),'time'].values)
-        diffs=np.diff(sort_time)
+        diffs=np.diff(sort_time)#Normalising to length of time
         lower_bounds=[np.nanmin(self.lcs[src]['time'])]
         upper_bounds=[np.nanmax(self.lcs[src]['time'])]
         n_jump=0
         diffs_mask=np.ones(len(diffs))
         
         while n_jump<n_gaps:
+            if np.max(diffs/np.sum(diffs[diffs_mask==1]))<min_gap_thresh:
+                #The largest gap, when normalised to total gap lengths (ignoring already-removed gaps) is below threshold - stopping
+                break
+
             #Adding a weighting such that gaps far from the known gaps are weighted higher
             diffs_prior=np.clip(1-1/np.min(sort_time[:-1][None,:]-np.array(lower_bounds)[:,None],axis=0)**(8/typic_dist),0,1)*np.clip(1-1/np.min(np.array(upper_bounds)[:,None]-sort_time[1:][None,:],axis=0)**(8/typic_dist),0,1)
             #(typic_dist - 1/(np.min(sort_time[:-1][None,:]-np.array(lower_bounds)[:,None],axis=0)+1/typic_dist))*(typic_dist - 1/(np.min(np.array(upper_bounds)[:,None]-sort_time[1:][None,:],axis=0)+1/typic_dist))/(typic_dist**2)
@@ -3450,6 +3584,7 @@ class chexo_model():
             lower_bounds+=[sort_time[1+new_jump_ix]]
             upper_bounds+=[sort_time[new_jump_ix]]
             diffs_mask[new_jump_ix]=0
+                
             n_jump+=1
         sectinfo={}
         for nb in range(len(lower_bounds)):
@@ -3457,6 +3592,7 @@ class chexo_model():
                           'end':np.sort(upper_bounds)[nb]+0.005}
             sectinfo[nb]['dur']=sectinfo[nb]['end']-sectinfo[nb]['start']
             sectinfo[nb]['data_ix']=(self.lcs[src]['time'].values>=sectinfo[nb]['start'])&(self.lcs[src]['time'].values<=sectinfo[nb]['end'])
+
         self.logger.debug(sectinfo)
         return sectinfo
 
@@ -3485,6 +3621,7 @@ class chexo_model():
         end_bool=np.hstack((diffs>0.33,True))
         ends=sort_time[end_bool]
         starts=sort_time[start_bool]
+
         #correlating jumps to start/stops in field times
         sectinfo={}
         self.logger.debug(field_df)
@@ -3520,10 +3657,14 @@ class chexo_model():
             self.phot_plot_info={}
         if src not in self.phot_plot_info or overwrite:
             self.phot_plot_info[src]={}
-            self.phot_plot_info[src]['sectinfo'] = self.init_phot_plot_sects(src)
+            if src=='tess':
+                self.phot_plot_info[src]['sectinfo'] = self.init_phot_plot_sects(src)
+            else:
+                self.phot_plot_info[src]['sectinfo'] = self.init_phot_plot_sects_noprior(src)
         for ns in self.phot_plot_info[src]['sectinfo']:
             self.phot_plot_info[src]['sectinfo'][ns]['ix'] = (self.models_out[src]['time'].values>=self.phot_plot_info[src]['sectinfo'][ns]['start'])&(self.models_out[src]['time']<=self.phot_plot_info[src]['sectinfo'][ns]['end'])
         logging.debug(self.phot_plot_info[src])
+        print(self.phot_plot_info['k2'])
         self.phot_plot_info[src]['transmin']=np.min(np.hstack([self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'].values for ns in self.phot_plot_info[src]['sectinfo']]))
         self.phot_plot_info[src]['stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values) for ns in self.phot_plot_info[src]['sectinfo']])
         self.phot_plot_info[src]['flat_stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values - \
