@@ -427,8 +427,8 @@ class chexo_model():
             #pps.smear_resid_sa = True
             pps.non_lin_tweak = True
 
-            if use_past_optimsation and tools.check_past_PIPE_runs(out_dir):
-
+            if use_past_optimsation
+                tools.check_past_PIPE_runs(out_dir)
             if optimise_klim:
                 pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
                 pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]

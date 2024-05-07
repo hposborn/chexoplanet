@@ -132,6 +132,11 @@ def binlc_given_x(lc_segment,binnedx, return_digi=False):
     else:
         return binlc
     
+
+def check_past_PIPE_params(folder):
+    #Checking to s
+    return None
+
 #Copied from Andrew Vanderburg:
     
 def robust_mean(y, cut):
@@ -652,12 +657,16 @@ def get_cheops_ORs():
 
     return input_ors
 
-def update_period_w_tls(time,flux,per):
+def update_period_w_tls(time,flux,per,N_search_pers=250,oversampling=5):
     from transitleastsquares import transitleastsquares as tls
-    tlsmodel=tls(t=time,
-                y=1+flux*1e-3)
-    outtls=tlsmodel.power(period_min=per*0.999,period_max=per*1.001,use_threads=4,duration_grid_step=1.2,
-                        oversampling_factor=2,transit_depth_min=100e-6)
+    tlsmodel=tls(t=np.sort(time), y=1+flux[np.argsort(time)]*1e-3)
+    #Hacked TLS a bit to get this estimate of the sampling frequency in Period - needed in case N_searchfreqs<100, at which point all periods are searched
+    span=np.max(time)-np.min(time)
+    deltaP=per**(4/3)/(13.23*oversampling*span)
+    #print("TLS period update. period_min=",per-0.5*N_search_pers*deltaP,"period_max=",per+0.5*N_search_pers*deltaP)
+    outtls=tlsmodel.power(period_min=per-0.5*N_search_pers*deltaP,period_max=per+0.5*N_search_pers*deltaP,
+                          use_threads=4, duration_grid_step=1.2,
+                          oversampling_factor=oversampling, transit_depth_min=100e-6)
     return outtls.period
 
 def ProcessTOI(toi,toi_cat,all_cheops_obs,cheops_ors,commentstring="V0300_horus",**kwargs):
