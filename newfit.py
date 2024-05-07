@@ -186,7 +186,7 @@ class chexo_model():
             self.filter_TOI()
             self.monotools_lc=lightcurve.multilc(self.init_toi_data.iloc[0]['TIC ID'],'tess',**kwargs)
         if not hasattr(self,'radec') and hasattr(self.monotools_lc,'radec'):
-            mod.radec=mod.monotools_lc.radec
+            self.radec=self.monotools_lc.radec
         self.monotools_lc.sort_timeseries()
         
         Rstar, Teff, logg = starpars_from_MonoTools_lc(self.monotools_lc)
@@ -2688,7 +2688,7 @@ class chexo_model():
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['gp_rollangle_model_phi_'+str(fk)][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting'].values.astype(int)]
                 elif 'spline_model_'+str(fk) in self.init_soln:
                     self.logger.debug(np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0).shape)
-                    fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['spline_model_'+str(fk)][self.cheops_fk_mask[fk]]
+                    fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.cheops_fk_mask[fk]] for pl in self.planets]),axis=0)+self.init_soln['spline_model_'+str(fk)]
                 else:
                     fkmod=self.init_soln['cheops_flux_cor_'+str(fk)]+np.sum(np.vstack([self.init_soln['cheops_planets_x_'+pl][self.lcs["cheops"]['filekey']==fk] for pl in self.planets]),axis=0)
             starts+=[lcfk['time'].values[0]]
@@ -2847,7 +2847,7 @@ class chexo_model():
                     elif len(self.planets)>0:
                         self.models_out['cheops']["cheops_allplmodel_"+p]=np.nanpercentile(np.sum(np.stack([self.trace.posterior['cheops_planets_x_'+pl].values[:,:,self.lcs["cheops"]['mask']] for pl in self.planets]),axis=0),self.percentiles[p],axis=(0,1))
                     if len(self.planets)>0:
-                        self.models_out['cheops']["cheops_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace.posterior['cheops_planets_gaps_'+pl].values for pl in self.planets]),axis=2),self.percentiles[p],axis=(0,1))
+                        self.models_out['cheops_gap_models_out']["cheops_allplmodel_"+p]=np.nanpercentile(np.sum(np.dstack([self.trace.posterior['cheops_planets_gaps_'+pl].values for pl in self.planets]),axis=2),self.percentiles[p],axis=(0,1))
             elif hasattr(self,'init_soln'):
                 p="med"
                 self.models_out['cheops']['cheops_lindetrend_'+p]=np.hstack([self.init_soln['cheops_flux_cor_'+fk] for fk in self.cheops_filekeys])
@@ -2862,7 +2862,7 @@ class chexo_model():
                     else:
                         self.models_out['cheops']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_x_'+pl][self.lcs["cheops"]['mask']]
                     if 'cheops_planets_gaps_'+pl in self.init_soln:
-                        self.models_out['cheops']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_gaps_'+pl]
+                        self.models_out['cheops_gap_models_out']['cheops_'+pl+"model_"+p]=self.init_soln['cheops_planets_gaps_'+pl]
 
                 if 'cheops_planets_x' in self.init_soln:
                     self.models_out['cheops']['cheops_allplmodel_'+p]=np.sum(self.init_soln['cheops_planets_x'][self.lcs["cheops"]['mask'],:],axis=1)
@@ -3172,7 +3172,7 @@ class chexo_model():
                 else:
                     self.models_out[mod].to_csv(outfile)
     
-    def check_rollangle_gp(self, make_change=True, **kwargs):
+    def check_rollangle_gp(self, make_change=False, **kwargs):
         """Checking now that the model is initialised whether the rollangle GP improves the loglik or not.
         """
         #self.init_soln['cheops_summo']
@@ -3508,44 +3508,52 @@ class chexo_model():
                     plt.ylim(ylim)
             else:
                 plt.subplot(1,len(fkloop),1+n)
-                plt.ylim(np.min(maxmins['resid_min']),
-                         np.max(maxmins['resid_max']))
+                if ylim is None:
+                    plt.ylim(np.min(maxmins['resid_min']),
+                            np.max(maxmins['resid_max']))
+                else:
+                    plt.ylim(ylim)
 
         plt.subplots_adjust(wspace=0.05,hspace=0.05)
         if save:
             save_suffix="" if save_suffix is None else save_suffix
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+save_suffix+"_cheops_plots"+save_suffix+"."+savetype),transparent=transparent)
     
-    def plot_cheops_absphot(self,save=True,savetype='png',save_suffix=None):
+    def plot_cheops_absphot(self,save=True,savetype='png',save_suffix=None,split_by_sects=True,ylim=None):
         #Plotting absolute photometry
         self.lcs['cheops']['raw_flux_medium_offset'] = np.zeros(len(self.lcs['cheops']))
         for fk in self.cheops_filekeys:
             self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'raw_flux_medium_offset']=1000*(np.nanmedian(self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'raw_flux']/np.nanmedian(self.lcs['cheops']['raw_flux'])-1))
         self.make_cheops_timeseries(overwrite=True)
         assert 'raw_flux_medium_offset' in self.models_out['cheops'].columns, "Make Cheops Timeseries did not place raw_flux_medium_offset into out DF..."
-        sectinfo = self.init_phot_plot_sects_noprior('cheops', n_gaps=2, typic_dist=100, min_gap_thresh=0.6)
+        if split_by_sects:
+            sectinfo = self.init_phot_plot_sects_noprior('cheops', n_gaps=2, typic_dist=100, min_gap_thresh=0.6)
+        else:
+            sectinfo={'all':{'start':np.min(self.lcs['cheops']['time'])-0.1,'end':0.1+np.max(self.lcs['cheops']['time'])}}
         for ns,sectname in enumerate(sectinfo):
             plt.subplot(len(sectinfo),1,ns+1)
             sectinfo[sectname]['ix'] = (self.models_out['cheops']['time'].values>=sectinfo[sectname]['start'])&(self.models_out['cheops']['time'].values<=sectinfo[sectname]['end'])
-
+            
             #Plotting flux
-            plt.plot(self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'],
-                        self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux']+self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'raw_flux_medium_offset'],
-                        '.k',markersize=1.0,alpha=0.4,zorder=1)
-            binsect=bin_lc_segment(np.column_stack((self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'],
-                                                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux']+self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'raw_flux_medium_offset'],
+            detflux=self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux'] - self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'cheops_alldetrend_med'] + self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'raw_flux_medium_offset']
+
+            plt.plot(self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'], detflux, '.k',markersize=1.0,alpha=0.4,zorder=1)
+            binsect=bin_lc_segment(np.column_stack((self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'],detflux,
                                                     self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux_err'])),1/48)
             plt.errorbar(binsect[:,0],binsect[:,1],yerr=binsect[:,2],fmt='.',color="C1",ecolor="C0",alpha=0.6,zorder=2)
         
             plt.xlim(sectinfo[sectname]['start']-1,sectinfo[sectname]['end']+1)
             plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%d'))
-            
-            plt.ylim(np.min(self.models_out['cheops'].loc[:,'flux']+self.models_out['cheops'].loc[:,'raw_flux_medium_offset']),
-                     np.max(self.models_out['cheops'].loc[:,'flux']+self.models_out['cheops'].loc[:,'raw_flux_medium_offset']))
+            if ylim is None:
+                plt.ylim(np.min(binsect[:,1])-0.25*np.nanstd(binsect[:,1]),
+                        np.max(binsect[:,1])+0.25*np.nanstd(binsect[:,1]))
+            else:
+                plt.ylim(ylim)
 
             if ns==len(sectinfo)-1:
                 plt.xlabel("BJD")
             plt.ylabel("Relative Flux [ppt]")
+        
         if save:
             save_suffix="" if save_suffix is None else save_suffix
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_absphotcheops_plot"+save_suffix+"."+savetype))
