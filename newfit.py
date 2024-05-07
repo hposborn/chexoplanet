@@ -358,7 +358,7 @@ class chexo_model():
         self.lcs[source]=pd.DataFrame({'time':time,'flux':flux,'flux_err':flux_err})
         self.lcs[source]['mask']=np.tile(True,len(time)) if mask is None else mask
 
-    def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,optimise_klim=True,**kwargs):
+    def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,optimise_klim=True,use_past_optimsation=True,**kwargs):
         """
          Run Pipe to extract PSFs. This is a wrapper around the : py : func : ` ~psf. pipeline. PipeParam ` class and it's subarray extraction function
          
@@ -370,6 +370,7 @@ class chexo_model():
              make_psf: Use PIPE to make a specific PSF for this target (long)
              binary: Whether there is a nearby contaminant within the PSF that we want to model using the BG-star-fits
              optimise_klim: Whether to optimise PIPE
+             use_past_optimsation: Whether to use the optimised PIPE parameters found in a previous PIPE run. Default is True
          Returns: 
          	 A list of : py : class : ` ~psf. pipeline. PipelineParam `
         """
@@ -425,6 +426,9 @@ class chexo_model():
             #pps.smear_resid = False
             #pps.smear_resid_sa = True
             pps.non_lin_tweak = True
+
+            if use_past_optimsation and tools.check_past_PIPE_runs(out_dir):
+
             if optimise_klim:
                 pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
                 pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
@@ -828,7 +832,7 @@ class chexo_model():
             if Mstar is None:
                 self.Mstar=rhostar[0]*self.Rstar[0]**3
 
-    def add_planets_from_toi(self,add_starpars=True,overwrite=False):
+    def add_planets_from_toi(self,add_starpars=True,overwrite=False,**kwargs):
         """Add all TOIs to the model as planets
         """
         assert hasattr(self,'init_toi_data')
@@ -842,7 +846,7 @@ class chexo_model():
                             tdur=float(row[1]['Duration (hours)'])/24,
                             depth=float(row[1]['Depth (ppm)'])/1e6,
                             period=float(row[1]['Period (days)']),
-                            period_err=float(row[1]['Period (days) err']))
+                            period_err=float(row[1]['Period (days) err']),**kwargs)
             
     def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None, period_err=None, b=None, 
                    rprs=None, K=None, overwrite=False,check_per=True,force_check_per=False,**kwargs):
