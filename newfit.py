@@ -428,7 +428,7 @@ class chexo_model():
             pps.non_lin_tweak = True
 
             if use_past_optimsation
-                tools.check_past_PIPE_runs(out_dir)
+                tools.check_past_PIPE_params(out_dir)
             if optimise_klim:
                 pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
                 pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
@@ -3676,7 +3676,6 @@ class chexo_model():
         for ns in self.phot_plot_info[src]['sectinfo']:
             self.phot_plot_info[src]['sectinfo'][ns]['ix'] = (self.models_out[src]['time'].values>=self.phot_plot_info[src]['sectinfo'][ns]['start'])&(self.models_out[src]['time']<=self.phot_plot_info[src]['sectinfo'][ns]['end'])
         logging.debug(self.phot_plot_info[src])
-        print(self.phot_plot_info['k2'])
         self.phot_plot_info[src]['transmin']=np.min(np.hstack([self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],src+'_allplmodel_med'].values for ns in self.phot_plot_info[src]['sectinfo']]))
         self.phot_plot_info[src]['stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values) for ns in self.phot_plot_info[src]['sectinfo']])
         self.phot_plot_info[src]['flat_stdev']=np.nanmedian([np.nanstd(self.models_out[src].loc[self.phot_plot_info[src]['sectinfo'][ns]['ix'],'flux'].values - \
