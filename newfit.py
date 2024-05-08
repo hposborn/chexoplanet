@@ -313,14 +313,14 @@ class chexo_model():
             #Need to make sure all the DRP apertures are the same
             self.assess_cheops_drp_apertures()
 
-    def filter_TOI(self,threshdist=3):
+    def filter_TOI(self,threshdist=3,**kwargs):
         """Load the TOI list (using `get_TOI`) and then find the specific case which either refers to the name given to this target, or to the RA/Dec (within threshdic arcsec)
 
         Args:
         threshdic - Threshhold in arcsecs below which to associate the target with a given TOI.
         """
         if not hasattr(self,'toi_cat'):
-            self.get_TOI()
+            self.get_TOI(**kwargs)
         if "TOI" in self.name and int(self.name.replace('-','')[3:]) in self.toi_cat['star_TOI'].values:
             #Adding this as planet array
             self.init_toi_data=self.toi_cat.loc[self.toi_cat['star_TOI']==int(self.name.replace('-','')[3:])]
@@ -332,7 +332,7 @@ class chexo_model():
         else:
             raise ValueError()
 
-    def get_TOI(self):
+    def get_TOI(self,**kwargs):
         """Get TOI info. We either download the TOI catalogue from ExoFop, or if this was recently accessed, we load the TOI catalogue from the data/tables folder in cheoxplanet"""
         round_date=int(np.round(Time.now().jd,-1))
         
@@ -4081,6 +4081,7 @@ class chexo_model():
             yoffset=0
             t0 = self.init_soln['t0_'+pl] if not hasattr(self,'trace') else np.nanmedian(self.trace.posterior['t0_'+pl].values)
             p = self.init_soln['P_'+pl] if not hasattr(self,'trace') else np.nanmedian(self.trace.posterior['P_'+pl].values)
+            dep = 1e3*self.init_soln['ror_'+pl]**2 if not hasattr(self,'trace') else np.nanmedian(self.trace.posterior['ror_'+pl].values**2)
             nscope=0
             for scope in self.lc_fit:
                 if self.fit_ttvs or self.split_periods is not None and self.planets[pl]['n_trans']>2:
@@ -4124,7 +4125,9 @@ class chexo_model():
                                 alpha=0.66,zorder=5,color='C'+str(5+2*npl),linewidth=2.5)
                     std=np.nanmedian(abs(np.diff(plflux-self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"])))
                 else:
-                    transmin=0
+                    #No detected transit, but we can use the derived depth/other flux STD to get us nice sized "hole"
+                    transmin=dep
+                    std=np.nanmedian(abs(np.diff(self.models_out[scope].loc[:,'flux'].values-self.models_out[scope].loc[:,scope+"_alldetrend_med"].values)))
                 if yoffsets is None:
                     yoffset+= abs(transmin) + 3*std
                 else:
