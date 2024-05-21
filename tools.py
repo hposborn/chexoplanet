@@ -633,6 +633,28 @@ def get_all_cheops_obs(toi_cat,overwrite=False):
 
     return all_cheops_obs
 
+def find_jumps(vects):
+    """
+    Finding clear jumps for an MxN matrix (where M is number of observations and N is number of independent dimensions/measurements per observation) using scipy kmeans
+    """
+
+    N=1
+    distortion_norm=1e3
+    from scipy.cluster import vq
+    from scipy.spatial import distance
+    nan_mask=np.isfinite(np.sum(vects,1))
+    while N<5 and distortion_norm>0.1:
+        clusters, distortion = vq.kmeans(vects[nan_mask],N)
+        distortion_norm=distortion/np.ptp(clusters)
+        N+=1
+    #Finds first distortion value under 0.1
+    split_ix=np.argmin(distance.cdist(vects,clusters),axis=1)
+    if np.sum(~nan_mask)>0:
+        #print(split_ix,nan_mask,~nan_mask,split_ix[~nan_mask],vects[~nan_mask])
+        split_ix[~nan_mask]=np.nan #Making these nan rather than 0
+        split_ix[~nan_mask]=split_ix[1+np.arange(len(nan_mask))[~nan_mask]]#Assuming neighbours have the correct index and are not nanned
+    return split_ix
+
 def get_cheops_ORs():
     #Get the CHEOPS ORs which contain basic info about planet ephemeris
     

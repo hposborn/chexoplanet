@@ -395,13 +395,17 @@ class chexo_model():
         if (os.path.exists(os.path.join(out_dir,fk,"Outdata","00000")) and len(glob.glob(os.path.join(out_dir,fk,"Outdata","00000","*.fits")))==0) or overwrite:
             self.logger.debug("Overwriting stored PIPE data as either overwrite=True or no fits files generated in previous PIPE run. Filekey="+fk)
             os.system("rm -r "+os.path.join(out_dir,fk,"Outdata"))
+        #print(glob.glob(os.path.join(out_dir,fk,"CH_PR*SCI_COR_Lightcurve-RINF_V0?00.fits")))
+        ifitfile=fits.open(glob.glob(os.path.join(out_dir,fk,"CH_PR*SCI_COR_Lightcurve-RINF_V0?00.fits"))[0])
+        exptime = float(ifitfile[1].header['EXPTIME'])
+        im_thresh=22.65 #Threshold in EXPTIME below which imagettes (and not just sub-arrays) are generated
         #print(os.path.exists(os.path.join(out_dir,fk,"Outdata")),os.path.join(out_dir,fk,"Outdata"),overwrite)
         if not os.path.exists(os.path.join(out_dir,fk,"Outdata")) or overwrite:
             #os.system("mkdir "+os.path.join(out_dir,fk,"Outdata"))
             #os.system("mkdir "+os.path.join(out_dir,fk,"Outdata","00000"))
             #Running PIPE:
             from pipe import PipeParam, PipeControl
-            self.logger.debug("PIPE file locations"+self.name.replace(" ","_")+fk+os.path.join(out_dir,fk,"Outdata","00000")+os.path.join(out_dir,fk))
+            self.logger.debug("PIPE file locations: "+self.name.replace(" ","_")+fk+" | "+os.path.join(out_dir,fk,"Outdata","00000")+" | "+os.path.join(out_dir,fk))
             pps = PipeParam(self.name.replace(" ","_"), fk, 
                             outdir=os.path.join(out_dir,fk,"Outdata","00000"),
                             datapath=os.path.join(out_dir,fk))
@@ -412,13 +416,36 @@ class chexo_model():
                 pps.Teff = int(np.round(self.Teff[0]))
             elif 'Teff' in kwargs:
                 pps.Teff = int(np.round(kwargs['Teff']))
+
+            if use_past_optimsation:
+                past_params = check_past_PIPE_params(out_dir)
+            
             #pps.limflux = 1e-5
             pps.darksub = True
             #pps.dark_level = 2
             #pps.remove_static = True
             #pps.save_static = False
             #pps.static_psf_rad = False
-            pps.im_optimise = optimise_klim
+            if use_past_optimsation and past_params is not None and past_params['im']['exists'] and exptime<im_thresh:
+                pps.im_optimise = False
+                #Setting key paramaters here:
+                for kpar in past_params['im']:
+                    if kpar!='exists':
+                        setattr(pps,kpar,past_params['im'][kpar])
+
+            elif exptime<im_thresh:
+                pps.im_optimise = optimise_klim
+            
+            if use_past_optimsation and past_params is not None and past_params['sa']['exists'] and exptime>=im_thresh:
+                pps.sa_optimise = False
+                #Setting key paramaters here:
+                for kpar in past_params['sa']:
+                    if kpar!='exists':
+                        setattr(pps,kpar,past_params['sa'][kpar])
+
+            elif exptime>=im_thresh:
+                pps.sa_optimise = optimise_klim
+            
             #pps.smear_fact = 5.5
             pps.psf_score = None
             pps.psf_min_num = 12
@@ -427,15 +454,16 @@ class chexo_model():
             #pps.smear_resid_sa = True
             pps.non_lin_tweak = True
 
-            if use_past_optimsation:
-                tools.check_past_PIPE_params(out_dir)
             if optimise_klim:
-                pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
-                pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                if exptime<im_thresh:
+                    pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                elif exptime>=im_thresh:
+                    pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
                 self.logger.debug("Setting number of klip models to test from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
             else:
-                self.logger.debug("Setting klip from magnitude."+str(pps.klip)+". Filekey="+fk)
-                pps.klip = int(np.clip(2.5**(12-mag),1,10))
+                if not use_past_optimisation:
+                    self.logger.debug("Setting klip from magnitude."+str(pps.klip)+". Filekey="+fk)
+                    pps.klip = int(np.clip(2.5**(12-mag),1,10))
             #pps.sigma_clip = 15
             #pps.empiric_noise = True
             #pps.empiric_sigma_clip = 4
@@ -453,7 +481,7 @@ class chexo_model():
             #pc = PipeControl(pps)
             if binary:
                 self.logger.debug("Running PIPE with a binary/companion star. Filekey="+fk)
-                pps.fit_bgstars = False
+                pps.fit_bgstars = True
                 #pps.binary = True
                 #pps.robust_centre_binary = True
                 #starcat=fits.open(glob.glob(os.path.join(out_dir,fk,"*_StarCatalogue-*.fits"))[0])
@@ -849,7 +877,7 @@ class chexo_model():
                             period_err=float(row[1]['Period (days) err']),**kwargs)
             
     def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None, period_err=None, b=None, 
-                   rprs=None, K=None, overwrite=False,check_per=True,force_check_per=False,**kwargs):
+                   rprs=None, K=None, overwrite=False,check_per=False,force_check_per=False,**kwargs):
         """Add planet to the model
 
         Args:
@@ -1100,10 +1128,10 @@ class chexo_model():
         with ootmodel: 
             if 'cores' in kwargs:
                 self.oot_gp_trace = pm.sample(tune=500, draws=1200, start=oot_soln, 
-                                        compute_convergence_checks=False,cores=kwargs['cores'],return_inferencedata=True)
+                                        compute_convergence_checks=False,cores=kwargs['cores'],return_inferencedata=True,pickle_backend='dill')
             else:
                 self.oot_gp_trace = pm.sample(tune=500, draws=1200, start=oot_soln, 
-                                        compute_convergence_checks=False,return_inferencedata=True)
+                                        compute_convergence_checks=False,return_inferencedata=True,pickle_backend='dill')
 
 
     def cheops_only_model(self, fk, transittype="fix", force_no_dydt=True, overwrite=False, include_PIPE_PCs=True, 
@@ -1317,7 +1345,7 @@ class chexo_model():
                                             [cheops_obs_mean,cheops_logs] + \
                                             [quad_decorr_dict[par] for par in quad_decorr_dict])
             comb_soln = pmx.optimize(start=comb_soln)
-            self.cheops_init_trace[savefname[1:]]= pmx.sample(tune=300, draws=400, chains=3, cores=3, start=comb_soln, return_inferencedata=True)
+            self.cheops_init_trace[savefname[1:]]= pmx.sample(tune=300, draws=400, chains=3, cores=3, start=comb_soln, return_inferencedata=True,pickle_backend='dill')
 
             pickle.dump(self.cheops_init_trace[savefname[1:]],open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"wb"))
         return savefname[1:]
@@ -2448,7 +2476,7 @@ class chexo_model():
                                     start=self.init_soln, target_accept=0.8,
                                     parameter_groups=groups,
                                     return_inferencedata=True, 
-                                    idata_kwargs=dict(log_likelihood=True), #Adding these for large model sizes
+                                    idata_kwargs=dict(log_likelihood=True),pickle_backend='dill', #Adding these for large model sizes
                                     **kwargs)#**kwargs)
         self.save_trace_summary()
         if save_model:
@@ -2631,7 +2659,7 @@ class chexo_model():
             
             self.ttv_trace = pmx.sample(tune=n_tune_steps, draws=n_draws, 
                                     chains=int(n_chains*n_cores), cores=n_cores, 
-                                    start=self.ttv_init_soln, target_accept=0.8, return_inferencedata=True)#**kwargs)
+                                    start=self.ttv_init_soln, target_accept=0.8, return_inferencedata=True,pickle_backend='dill',**kwargs)#**kwargs)
             self.save_trace_summary(trace=self.ttv_trace,suffix="_ttvfit",returndf=False)
         if not hasattr(self,'model_comp'):
             self.model_comp={'ttv':{}}
@@ -2808,7 +2836,7 @@ class chexo_model():
             self.models_out['cheops']=pd.DataFrame()
             self.models_out['cheops_gap_models_out']=pd.DataFrame()
 
-            for col in ['time','flux','flux_err','phi','bg','centroidx','centroidy','deltaT','xoff','yoff','filekey','n_phi_model','raw_flux_medium_offset']:
+            for col in ['time','flux','flux_err','phi','bg','centroidx','centroidy','deltaT','xoff','yoff','filekey','n_phi_model','raw_flux_medium_offset','raw_flux_medium_offset_centroidcorr']:
                 if col in self.lcs["cheops"].columns:
                     self.models_out['cheops'][col]=np.hstack([self.lcs["cheops"].loc[self.cheops_fk_mask[fk],col] for fk in self.cheops_filekeys])
             if self.fit_phi_gp:
@@ -2885,7 +2913,7 @@ class chexo_model():
             self.models_out[tracename]=pd.DataFrame()
             #self.models_out[tracename+'_gap_models_out']=pd.DataFrame()
             fks=self.cheops_filekeys if fk is None else [fk]
-            for col in ['time','flux','flux_err','filekey','raw_flux_medium_offset']:
+            for col in ['time','flux','flux_err','filekey','raw_flux_medium_offset','raw_flux_medium_offset_centroidcorr']:
                 if col in self.lcs["cheops"].columns:
                     self.models_out[tracename][col]=np.hstack([self.lcs["cheops"].loc[self.cheops_fk_mask[fk],col] for fk in fks])
             if type(init_trace)==pm.backends.base.MultiTrace:
@@ -3528,8 +3556,24 @@ class chexo_model():
         self.lcs['cheops']['raw_flux_medium_offset'] = np.zeros(len(self.lcs['cheops']))
         for fk in self.cheops_filekeys:
             self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'raw_flux_medium_offset']=1000*(np.nanmedian(self.lcs['cheops'].loc[self.lcs['cheops']['filekey']==fk,'raw_flux']/np.nanmedian(self.lcs['cheops']['raw_flux'])-1))
+        
+        #Looking for centroid jumps and making correction vector using this
+        centroid_jump_ix = find_jumps(np.column_stack((self.lcs['cheops']['centroidx'], self.lcs['cheops']['centroidy'])))
+
+        n_centroid_jumps = np.nanmax(centroid_jump_ix)
+        self.lcs['cheops']['raw_flux_medium_offset_centroidcorr'] = np.zeros(len(self.lcs['cheops']))
+        centroid_jump_locs=[]
+        for n_cent in range(1+np.nanmax(centroid_jump_ix)):
+            if n_cent>0:
+                prev_jump_end   = np.max(self.lcs['cheops'].loc[centroid_jump_ix==n_cent-1,'time'])
+                this_jump_start = np.min(self.lcs['cheops'].loc[centroid_jump_ix==n_cent,'time'])
+                centroid_jump_locs += [0.5*(prev_jump_end+this_jump_start)]
+            self.lcs['cheops'].loc[centroid_jump_ix==n_cent, 'raw_flux_medium_offset_centroidcorr'] = np.nanmedian(self.lcs['cheops'].loc[centroid_jump_ix==n_cent, 'raw_flux_medium_offset'])
+        from matplotlib.colors import LinearSegmentedColormap,to_rgb
+        cm = LinearSegmentedColormap.from_list('dark_red_purple_blue', [to_rgb("#1c718e"),to_rgb("#173a87"),to_rgb("#4c0b5b"),to_rgb("#881353"),to_rgb("#8a2b10")], N=10)
+
         self.make_cheops_timeseries(overwrite=True)
-        assert 'raw_flux_medium_offset' in self.models_out['cheops'].columns, "Make Cheops Timeseries did not place raw_flux_medium_offset into out DF..."
+        assert 'raw_flux_medium_offset' and 'raw_flux_medium_offset_centroidcorr' in self.models_out['cheops'].columns, "Make Cheops Timeseries did not place raw_flux_medium_offset into out DF..."
         if split_by_sects:
             sectinfo = self.init_phot_plot_sects_noprior('cheops', n_gaps=2, typic_dist=100, min_gap_thresh=0.6)
         else:
@@ -3539,25 +3583,34 @@ class chexo_model():
             sectinfo[sectname]['ix'] = (self.models_out['cheops']['time'].values>=sectinfo[sectname]['start'])&(self.models_out['cheops']['time'].values<=sectinfo[sectname]['end'])
             
             #Plotting flux
-            detflux=self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux'] - self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'cheops_alldetrend_med'] + self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'raw_flux_medium_offset']
+            detflux=self.models_out['cheops'].loc[sectinfo[sectname]['ix'], 'flux'] - \
+                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'], 'cheops_alldetrend_med'] + \
+                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'], 'raw_flux_medium_offset'] - \
+                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'], 'raw_flux_medium_offset_centroidcorr']
 
-            plt.plot(self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'], detflux, '.k',markersize=1.0,alpha=0.4,zorder=1)
-            binsect=bin_lc_segment(np.column_stack((self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'],detflux,
-                                                    self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux_err'])),1/48)
+            plt.scatter(self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'], detflux, 
+                        s=1.0, c=self.models_out['cheops'].loc[sectinfo[sectname]['ix'], 'raw_flux_medium_offset_centroidcorr'],
+                        alpha=0.4,zorder=1,cmap=cm)
+            binsect = bin_lc_segment(np.column_stack((self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'time'], detflux,
+                                                      self.models_out['cheops'].loc[sectinfo[sectname]['ix'],'flux_err'])), 1/48)
             plt.errorbar(binsect[:,0],binsect[:,1],yerr=binsect[:,2],fmt='.',color="C1",ecolor="C0",alpha=0.6,zorder=2)
-        
+
             plt.xlim(sectinfo[sectname]['start']-1,sectinfo[sectname]['end']+1)
             plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%d'))
             if ylim is None:
-                plt.ylim(np.min(binsect[:,1])-0.25*np.nanstd(binsect[:,1]),
+                ylim=(np.min(binsect[:,1])-0.25*np.nanstd(binsect[:,1]),
                         np.max(binsect[:,1])+0.25*np.nanstd(binsect[:,1]))
-            else:
-                plt.ylim(ylim)
+            plt.ylim(ylim)
 
             if ns==len(sectinfo)-1:
                 plt.xlabel("BJD")
+
+            for j in centroid_jump_locs:
+                if (j>sectinfo[sectname]['start']-1)&(j<sectinfo[sectname]['end']+1):
+                    plt.plot((j,j), ylim, "--b", label="centroid jump", alpha=0.5)
             plt.ylabel("Relative Flux [ppt]")
-        
+        if len(centroid_jump_locs)>0:
+            plt.legend()
         if save:
             save_suffix="" if save_suffix is None else save_suffix
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_absphotcheops_plot"+save_suffix+"."+savetype))
