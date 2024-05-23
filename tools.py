@@ -2,8 +2,21 @@ import numpy as np
 import pandas as pd
 import os
 import warnings
+import httplib2
+import importlib
 
 warnings.filterwarnings("ignore")
+
+chexo_tablepath = os.path.join(os.path.dirname(__file__),'tables')
+if os.environ.get('CHEXOPATH') is None:
+    chexo_savepath = os.path.join(os.path.dirname( __file__ ),'data')
+else:
+    chexo_savepath = os.environ.get('CHEXOPATH')
+
+id_dic={'TESS':'TIC','tess':'TIC','Kepler':'KIC','kepler':'KIC','KEPLER':'KIC',
+        'K2':'EPIC','k2':'EPIC','CoRoT':'CID','corot':'CID'}
+lc_dic={'tess':'ts','kepler':'k1','k2':'k2','corot':'co','cheops':'ch'}
+
 
 def vals_to_latex(vals):
     #Function to turn -1,0, and +1 sigma values into round latex strings for a table
@@ -134,8 +147,55 @@ def binlc_given_x(lc_segment,binnedx, return_digi=False):
     
 
 def check_past_PIPE_params(folder):
-    #Checking to s
-    return None
+    #Checking to see what PIPE optimised parameters we can find
+    import glob
+    import os
+    
+    #Getting all filekey folders for a given object:
+    past_fks=glob.glob(os.path.join(folder,"PR??????_????????_V0?00"))
+    past_fk_params={}
+    allkeys={'im':[],'sa':[]}
+    #Looping over all filekeys:
+    for fk in past_fks:
+        ifk=os.path.basename(os.path.normpath(fk))
+        pipefold=os.path.join(folder,fk,"Outdata","00000")
+        
+        if os.path.exists(os.path.join(pipefold,"logfile.txt")):
+            past_fk_params[ifk]={'im':{},'sa':{}}
+            #Opening the logfile for each:
+            
+            with open(os.path.join(pipefold,"logfile.txt")) as flog:
+                #Searching for and saving lines with format: Fri Apr 19 13:20:48 2024 [4.45 min] k: 7, r: 25, bg: 1, d: 1, s: 1, mad=311.78 [im]
+                paramline=[line for line in flog if np.array(['k: ' in line, 'r: ' in line, 'bg: ' in line, 'd: ' in line, 's: ' in line]).sum()>3]
+                #Adding params to a dict. Spliting into "imagette" and "subarray"
+                for pl in paramline:
+                    if pl.replace(' ','')[-3:]=="[sa]":
+                        past_fk_params[ifk]['sa']={i.replace(' ','').split(':')[0]:i.replace(' ','').split(':')[1] for i in paramline[0].split(']')[1][:-3].split(',')}
+                        allkeys['sa']+=list(past_fk_params[ifk]['im'].keys())
+                    elif pl.replace(' ','')[-3:]=="[im]":
+                        past_fk_params[ifk]['im']={i.replace(' ','').split(':')[0]:i.replace(' ','').split(':')[1] for i in paramline[0].split(']')[1][:-3].split(',')}
+                        allkeys['im']+=list(past_fk_params[ifk]['im'].keys())
+    
+    #Now we need to pick the most common optimisation approach
+    pkey_modes={'im':{},'sa':{}}
+    
+    if np.sum([len(past_fk_params[fk]['sa']) for fk in past_fk_params[ifk]])>0:
+        pkey_modes['sa']['exists']=True
+        for pkey in np.unique(allkeys['sa']):
+            all_pars=[past_fk_params[fk]['sa'][pkey] for fk in past_fk_params[ifk] if pkey in past_fk_params[fk]['sa']]
+            pkey_modes['sa'][pkey]=max(set(all_pars), key=all_pars.count)
+    else:
+        pkey_modes['sa']['exists']=False
+    
+    if np.sum([len(past_fk_params[fk]['im']) for fk in past_fk_params[ifk]])>0:
+        pkey_modes['im']['exists']=True
+        for pkey in np.unique(allkeys['im']):
+            all_pars=[past_fk_params[fk]['im'][pkey] for fk in past_fk_params[ifk] if pkey in past_fk_params[fk]['im']]
+            pkey_modes['im'][pkey]=max(set(all_pars), key=all_pars.count)
+    else:
+        pkey_modes['im']['exists']=False
+    
+    return pkey_modes
 
 #Copied from Andrew Vanderburg:
     
@@ -786,3 +846,453 @@ def ProcessTOI(toi,toi_cat,all_cheops_obs,cheops_ors,commentstring="V0300_horus"
     
     mod.MakeExoFopFiles(list(["TOI"+t for t in these_tois['TOI'].values.astype(str)]),
                         upload_loc="/home/hosborn/home1/data/Cheops_data/Ext_ChATeAUX/")
+    
+################################################
+#         Copied from MonoTools.tools          #
+################################################
+
+def CutHighRegions(flux, mask, std_thresh=3.2,n_pts=25,n_loops=2):
+    # Masking anomalous high region using a running 25-point median and std comparison
+    # This is best used for e.g. Corot data which has SAA crossing events.
+
+    digi=np.vstack([np.arange(f,len(flux)-(n_pts-f)) for f in range(n_pts)])
+    stacked_fluxes=np.vstack([flux[digi[n]] for n in range(n_pts)])
+
+    std_threshs=np.linspace(std_thresh-1.5,std_thresh,n_loops)
+
+    for n in range(n_loops):
+        stacked_masks=np.vstack([mask[digi[n]] for n in range(n_pts)])
+        stacked_masks=stacked_masks.astype(int).astype(float)
+        stacked_masks[stacked_masks==0.0]=np.nan
+
+        meds=np.nanmedian(stacked_fluxes*stacked_masks,axis=0)
+        stds=np.nanstd(stacked_fluxes*stacked_masks,axis=0)
+        #Adding to the mask any points identified in 80% of these passes:
+        #print(np.vstack([np.hstack((np.tile(False,1+n2),stacked_fluxes[n2]*stacked_masks[n2]>(meds+std_threshs[n]*stds),
+        #                 np.tile(False,n_pts-n2+1))) for n2 in np.arange(n_pts)]))
+        #print(np.nansum(np.vstack([np.hstack((np.tile(False,1+n2),stacked_fluxes[n2]*stacked_masks[n2]>(meds+std_threshs[n]*stds),
+        #                 np.tile(False,n_pts-n2+1))) for n2 in np.arange(n_pts)]),axis=0))
+        #print(np.nansum(np.vstack([np.hstack((np.tile(False,1+n2),stacked_fluxes[n2]*stacked_masks[n2]>(meds+std_threshs[n]*stds),
+        #                 np.tile(False,n_pts-n2+1))) for n2 in np.arange(n_pts)]),axis=0).shape)
+        #print(np.nansum(np.vstack([np.hstack((np.tile(False,1+n2),stacked_fluxes[n2]*stacked_masks[n2]>(meds+std_threshs[n]*stds),
+        #                 np.tile(False,n_pts-n2+1))) for n2 in np.arange(n_pts)]),axis=0)[1:-1].shape)
+        #print(mask.shape)
+
+        mask*=np.nansum(np.vstack([np.hstack((np.tile(False,1+n2),
+                                              stacked_fluxes[n2]*stacked_masks[n2]>(meds+std_threshs[n]*stds),
+                                              np.tile(False,n_pts-n2+1))) for n2 in np.arange(n_pts)])
+                           ,axis=0)[1:-1]<20
+    return mask
+
+def CutAnomDiff(flux,thresh=4.2):
+    #Uses differences between points to establish anomalies.
+    #Only removes single points with differences to both neighbouring points greater than threshold above median difference (ie ~rms)
+    #Fast: 0.05s for 1 million-point array.
+    #Must be nan-cut first
+    diffarr=np.vstack((np.diff(flux[1:]),np.diff(flux[:-1])))
+    diffarr/=np.median(abs(diffarr[0,:]))
+    #Adding a test for the first and last points if they are >3*thresh from median RMS wrt next two points.
+    anoms=np.hstack((abs(flux[0]-np.median(flux[1:3]))<(np.median(abs(diffarr[0,:]))*thresh*5),
+                     ((diffarr[0,:]*diffarr[1,:])>0)+(abs(diffarr[0,:])<thresh)+(abs(diffarr[1,:])<thresh),
+                     abs(flux[-1]-np.median(flux[-3:-1]))<(np.median(abs(diffarr[0,:]))*thresh*5)))
+    return anoms
+
+def find_time_regions(time,split_gap_size=1.5,**kwargs):
+    if np.nanmax(np.diff(np.sort(time)))>split_gap_size:
+        #We have gaps in the lightcurve, so we'll find the bins by looping through those gaps
+        time_starts = np.hstack((np.nanmin(time),np.sort(time)[1+np.where(np.diff(np.sort(time))>split_gap_size)[0]]))
+        time_ends   = np.hstack((time[np.where(np.diff(np.sort(time))>split_gap_size)[0]],np.nanmax(time)))
+        return [(time_starts[i],time_ends[i]) for i in range(len(time_starts))]
+    else:
+        return [(np.nanmin(time),np.nanmax(time))]
+
+def formwindow(dat,cent,size,boxsize,gapthresh=1.0):
+
+    win = (dat[:,0]>cent-size/2.)&(dat[:,0]<cent+size/2.)
+    box = (dat[:,0]>cent-boxsize/2.)&(dat[:,0]<cent+boxsize/2.)
+    if np.sum(win)>0:
+        high=dat[win,0][-1]
+        low=dat[win,0][0]
+        highgap = high < (cent+size/2.)-gapthresh
+        lowgap = low > (cent-size/2.)+gapthresh
+
+        if highgap and not lowgap:
+            win = (dat[:,0] > high-size)&(dat[:,0] <= high)
+        elif lowgap and not highgap:
+            win = (dat[:,0] < low+size)&(dat[:,0] >= low)
+
+        win = win&(~box)
+    return win, box
+
+def dopolyfit(win,mask=None,stepcent=0.0,d=3,ni=10,sigclip=3):
+    mask=np.tile(True,len(win)) if mask is None else mask
+    maskedwin=win[mask]
+
+    #initial fit and llk:
+    best_base = np.polyfit(maskedwin[:,0]-stepcent,maskedwin[:,1],w=1.0/maskedwin[:,2]**2,deg=d)
+    best_offset = (maskedwin[:,1]-np.polyval(best_base,maskedwin[:,0]))**2/maskedwin[:,2]**2
+    best_llk=-0.5 * np.sum(best_offset)
+
+    #initialising this "random mask"
+    randmask=np.tile(True,len(maskedwin))
+
+    for iter in range(ni):
+        # If a point's offset to the best model is great than a normally-distributed RV, it gets masked
+        # This should have the effect of cutting most "bad" points,
+        #   but also potentially creating a better fit through bootstrapping:
+        randmask = abs(np.random.normal(0.0,1.0,len(maskedwin)))<best_offset
+        randmask = np.tile(True,len(maskedwin)) if np.sum(randmask)==0 else randmask
+
+        new_base = np.polyfit(maskedwin[randmask,0]-stepcent,maskedwin[randmask,1],
+                              w=1.0/np.power(maskedwin[randmask,2],2),deg=d)
+        #winsigma = np.std(win[:,1]-np.polyval(base,win[:,0]))
+        new_offset = (maskedwin[:,1]-np.polyval(new_base,maskedwin[:,0]))**2/maskedwin[:,2]**2
+        new_llk=-0.5 * np.sum(new_offset)
+        if new_llk>best_llk:
+            #If that fit is better than the last one, we update the offsets and the llk:
+            best_llk=new_llk
+            best_offset=new_offset[:]
+            best_base=new_base[:]
+    return best_base
+
+def med_and_std(values):
+    return [np.nanmedian(values),np.nanstd(values)]
+
+def update_lc_locs(epoch,most_recent_sect):
+    #Updating the table of lightcurve locations using the scripts on the MAST/TESS "Bulk Downloads" page.
+    all_sects=np.arange(np.max(epoch.index.values),most_recent_sect).astype(int)+1
+    for sect in all_sects:
+        fitsloc="https://archive.stsci.edu/missions/tess/download_scripts/sector/tesscurl_sector_"+str(sect).zfill(2)+"_lc.sh"
+        h = httplib2.Http()
+        resp, content = h.request(fitsloc)
+        if int(resp['status']) < 400:
+            filename=content.split(b'\n')[1].decode().split(' ')[-2].split('-')
+            epoch.loc[sect]=pd.Series({'date':int(filename[0][4:]),'runid':int(filename[3])})
+        else:
+            print("Sector "+str(sect)+" not (yet) found on MAST | RESPONCE:"+resp['status'])
+    epoch.to_csv(chexo_tablepath+"/tess_lc_locations.csv")
+    return epoch
+
+def observed(tic,radec=None,maxsect=83):
+    # Using either "webtess" page or Chris Burke's tesspoint to check if TESS object was observed:
+    # Returns dictionary of each sector and whether it was observed or not
+    
+    tesspoint = importlib.import_module("tess-point.tess_stars2px")
+    #from tesspoint import tess_stars2px_function_entry as tess_stars2px
+    if radec is None:  
+        ticStringList = ['{0:d}'.format(x) for x in [np.int64(tic)]]    
+        # Setup mast query
+        request = {'service':'Mast.Catalogs.Filtered.Tic', \
+            'params':{'columns':'*', 'filters':[{ \
+                    'paramName':'ID', 'values':ticStringList}]}, \
+            'format':'json', 'removenullcolumns':True}
+        headers, outString = tesspoint.mastQuery(request)
+        outObject = json.loads(outString)
+        radec=SkyCoord(np.array([x['ra'] for x in outObject['data']])[0]*u.deg,
+                       np.array([x['dec'] for x in outObject['data']])[0]*u.deg)
+    #Now doing tic + radec search:
+    result = tesspoint.tess_stars2px_function_entry(tic, radec.ra.deg, radec.dec.deg)
+    sectors = result[3]
+    out_dic={s:True if s in sectors else False for s in np.arange(maxsect)}
+    #print(out_dic)
+    return out_dic
+
+def partition_list(a, k):
+    """AI is creating summary for partition_list
+
+    Args:
+        a (list): Ordered list of lengths that we wish to evenly split into k pieces
+        k (int): Number of parts along which to split a
+
+    Returns:
+        list: Ordered index of which of `k` bins the value in `a` belongs
+    """
+    if k <= 1: return np.tile(0,len(a))
+    if k == len(a): return np.arange(k)
+    assert k<len(a) #Cannot have more plot rows that data sectors...
+    partition_between = [(i+1)*len(a) // k for i in range(k-1)]
+    average_height = float(sum(a))/k
+    best_score = None
+    best_partitions = None
+    count = 0
+
+    while True:
+        starts = [0] + partition_between
+        ends = partition_between + [len(a)]
+        partitions = [a[starts[i]:ends[i]] for i in range(k)]
+        heights = list(map(sum, partitions))
+        abs_height_diffs = list(map(lambda x: abs(average_height - x), heights))
+        worst_partition_index = abs_height_diffs.index(max(abs_height_diffs))
+        worst_height_diff = average_height - heights[worst_partition_index]
+
+        if best_score is None or abs(worst_height_diff) < best_score:
+            best_score = abs(worst_height_diff)
+            best_partitions = partitions
+            no_improvements_count = 0
+        else:
+            no_improvements_count += 1
+
+        if worst_height_diff == 0 or no_improvements_count > 5 or count > 100:
+            return np.hstack([np.tile(i,ends[i]-starts[i]) for i in range(len(starts))])
+            #best_partitions
+        count += 1
+
+        move = -1 if worst_height_diff < 0 else 1
+        bound_to_move = 0 if worst_partition_index == 0\
+                        else k-2 if worst_partition_index == k-1\
+                        else worst_partition_index-1 if (worst_height_diff < 0) ^ (heights[worst_partition_index-1] > heights[worst_partition_index+1])\
+                        else worst_partition_index
+        direction = -1 if bound_to_move < worst_partition_index else 1
+        partition_between[bound_to_move] += move * direction
+
+def MakeBokehTable(df, dftype='toi', cols2use=None, cols2avoid=None, errtype=' err', width=300, height=350):
+    """Form Bokeh table from an input pandas dataframe
+
+    Args:
+        df ([type]): [description]
+        dftype (str, optional): [description]. Defaults to 'toi'.
+        cols2use ([type], optional): [description]. Defaults to None.
+        cols2avoid ([type], optional): [description]. Defaults to None.
+        width (int, optional): [description]. Defaults to 300.
+        height (int, optional): [description]. Defaults to 350.
+
+    Returns:
+        [type]: [description]
+    """
+    from bokeh.models import ColumnDataSource
+    from bokeh.models.widgets import DataTable, DateFormatter, TableColumn
+
+    if type(df)==pd.Series:
+        df=pd.DataFrame(df).T
+    if cols2use is None:
+        if dftype is None or dftype=='':
+            cols2use=df.columns
+        elif dftype=='toi':
+            cols2use=['TIC ID','TESS Disposition', 'TFOPWG Disposition', 'TESS Mag','RA', 'Dec',
+                'Epoch (BJD)','Period (days)','Duration (hours)', 'Depth (mmag)','Planet Radius (R_Earth)','SNR_per_transit',
+                'Stellar Eff Temp (K)', 'Stellar Radius (R_Sun)','Comments','Cheops_Observability','Cheops_Max_Efficiency',
+                'Cheops_Obs_dates','Year2_obs_times', 'Year3_obs_times','Year4_obs_times', 'TESS_data', 'TESS_dvr']
+        elif dftype=='tic':
+            cols2use='ID, ra, dec, Tmag, plx, eclong, eclat, Bmag, Vmag, Jmag,  Kmag, GAIAmag, Teff, logg, MH, rad, mass, rho, d'.split(', ')
+    if cols2avoid is None:
+        if dftype is None or dftype=='':
+            cols2avoid=[]
+        elif dftype=='toi':
+            cols2avoid=['SG1A','SG1B','SG2','SG3','SG4','SG5','ACWG ESM','ACWG TSM',
+                                'Time Series Observations','Spectroscopy Observations','Imaging Observations',
+                                'TESS Disposition','Master','Planet Insolation (Earth Flux)','Depth (mmag)',
+                                'Planet Equil Temp (K)','Previous CTOI','PM RA (mas/yr)','PM Dec (mas/yr)']
+        elif dftype=='tic':
+            cols2avoid='pmRA, pmDEC, objType, typeSrc, version, HIP, TYC, UCAC, TWOMASS, SDSS, ALLWISE, GAIA, APASS, KIC, POSflag, PMflag, lumclass, lum, ebv, numcont, contratio, disposition, duplicate_id, priority, EBVflagTeffFlag, gaiabp, gaiarp, gaiaqflag, starchareFlag, VmagFlag, BmagFlag, splists, RA_orig, Dec_orig, raddflag, wdflag, dstArcSec'.split(', ')
+    #Making Datatable inset:
+    err_cols=[]
+    nonerr_cols=[]
+    #errless_cols=[]
+
+    cols2use=[c for c in cols2use if not err_string_parse(c)[0]]
+   
+    df=df.rename(columns={col:col[:-1] for col in df.columns if col[-1]==' '}) #Removing trailing spaces
+
+    #Creating error arrays
+    for col in df.columns:
+        if col in cols2use and col not in cols2avoid and 'e_'+col in df.columns:
+            nonerr_cols+=[col]
+            err_cols+=['e_'+col]
+            #If we have multiple errors, we'll do a median to make sure we only end up with one:
+            df['e_'+col]=np.nanmedian(np.vstack([abs(df[ecol].values.astype(float)) for ecol in ['e_'+col,'epos_'+col,'eneg_'+col,col+' err',col+'_err1',col+'_err2',col+' Error'] if ecol in df.columns]),axis=0)
+
+        elif col in cols2use and col not in cols2avoid and type(df[col].values[0]) in [int,float,np.float64,np.int64,str] and 'e_'+col not in df.columns:
+            nonerr_cols+=[col]
+            err_cols+=['e_'+col]
+            df['e_'+col]=np.tile(np.nan,df.shape[0])
+
+    nonerr_cols=np.nan_to_num(np.array(nonerr_cols),0.0)
+    err_cols=np.nan_to_num(np.array(err_cols),0.0)
+    #errless_cols=np.nan_to_num(np.array(errless_cols),0.0)
+    newdf=pd.DataFrame()
+    newdf['col']=nonerr_cols
+    columns=[TableColumn(field='col', title='Column')]
+    for pl in range(df.shape[0]):
+        if 'TOI' in df.columns:
+            name = str(df.iloc[pl]['TOI'])+' '
+        elif 'CTOI' in df.columns:
+            name = str(df.iloc[pl]['CTOI'])+' '
+        elif 'id' in df.columns:
+            name = str(df.iloc[pl]['id'])+' '
+        else:
+            name = str(df.iloc[pl].name)+' '
+        newdf[name+'Value']=[0.0 if df.iloc[pl][val] in [None,np.nan,-np.inf,np.inf,''] else df.iloc[pl][val] for val in nonerr_cols]
+        newdf[name+'Errs']=[0.0 if df.iloc[pl][val] in [None,np.nan,-np.inf,np.inf,''] else df.iloc[pl][val] for val in err_cols]
+        #newdf=newdf.fillna(0.0)
+        columns+=[TableColumn(field=name+'Value', title=name+'Value')]
+        columns+=[TableColumn(field=name+'Errs', title=name+'Errs')]
+    #print(newdf)
+    data_table = DataTable(source=ColumnDataSource(newdf), columns=columns, width=width, height=height)    
+    return data_table
+
+def GetExoFop(icid, mission='tess',file=''):
+    cols={'Telescope':'telescope','Instrument':'instrument','Teff (K)':'teff','Teff (K) Error':'teffe',
+          'Teff':'teff','Teff Error':'teffe','log(g)':'logg',
+          'log(g) Error':'logge','Radius (R_Sun)':'rad','Radius':'rad','Radius Error':'rade',
+          'Radius (R_Sun) Error':'rade','logR\'HK':'logrhk',
+          'logR\'HK Error':'logrhke','S-index':'sindex','S-index Error':'sindexe','H-alpha':'haplha','H-alpha Error':'halphae',
+          'Vsini':'vsini','Vsini Error':'vsinie','Rot Per':'rot_per','Rot Per Error':'rot_pere','Metallicity':'feh',
+          'Metallicity Error':'fehe','Mass (M_Sun)':'mass','Mass':'mass','Mass Error':'masse',
+          'Mass (M_Sun) Error':'masse','Density (g/cm^3)':'rho_gcm3',
+          'Density':'rho_gcm3',
+          'Density (g/cm^3) Error':'rho_gcm3e','Luminosity':'lum','Luminosity Error':'lume',
+          'Observation Time (BJD)':'obs_time_bjd','Distance':'dis','Distance Error':'dise',
+          'RV (m/s)':'rv_ms','RV Error':'rv_mse','Distance (pc)':'dis','Distance (pc) Error':'dise',
+          '# of Contamination sources':'n_contams', 'B':'bmag', 'B Error':'bmage', 'Dec':'dec', 'Ecliptic Lat':'lat_ecl',
+          'Ecliptic Long':'long_ecl', 'Gaia':'gmag', 'Gaia Error':'gmage', 'Galactic Lat':'lat_gal', 'Galactic Long':'long_gal',
+          'H':'hmag', 'H Error':'hmage', 'In CTL':'in_ctl', 'J':'jmag', 'J Error':'jmage', 'K':'kmag', 'K Error':'kmage',
+          'Planet Name(s)':'planet_names', 'Proper Motion Dec (mas/yr)':'pm_dec',
+          'Proper Motion RA (mas/yr)':'pm_ra', 'RA':'ra','RA (J2015.5)':'ra', 'Dec (J2015.5)':'dec',
+          'Star Name & Aliases':'star_name', 'TESS':'tmag','Kep':'kepmag',
+          'TESS Error':'tmage', 'TIC Contamination Ratio':'ratio_contams', 'TOI':'toi', 'V':'vmag', 'V Error':'vmage',
+          'WISE 12 micron':'w3mag', 'WISE 12 micron Error':'w3mage', 'WISE 22 micron':'w4mag',
+          'WISE 22 micron Error':'w4mage', 'WISE 3.4 micron':'w1mag', 'WISE 3.4 micron Error':'w1mage',
+          'WISE 4.6 micron':'w2mag', 'WISE 4.6 micron Error':'w2mag', 'n_TOIs':'n_tois','spec':'spec',
+          'Campaign':'campaign','Object Type':'objtype'}
+    '''
+    Index(['mission', 'ra', 'dec', 'GalLong', 'GalLat', 'Aliases', 'campaign',
+           'Proposals', 'objtype', 'bmag', 'bmag_err', 'g', 'g_err', 'vmag',
+           'vmag_err', 'r', 'r_err', 'kepmag', 'kepmag_err', 'i', 'i_err', 'jmag',
+           'jmag_err', 'hmag', 'hmag_err', 'kmag', 'kmag_err', 'w1mag',
+           'w1mag_err', 'w2mag', 'w2mag_err', 'w3mag', 'w3mag_err', 'w4mag',
+           'w4mag_err', 'Teff', 'Teff_err', 'logg', 'logg_err', 'Radius',
+           'Radius_err', 'FeH', 'FeH_err', 'Distance', 'Distance_err', 'Mass',
+           'Mass_err', 'Density', 'Density_err', 'spec', 'bmagem', 'bmagep', 'gem',
+           'gep', 'vmagem', 'vmagep', 'rem', 'rep', 'kepmagem', 'kepmagep'],
+          dtype='object')
+    Index(['iem', 'iep', 'jmagem', 'jmagep', 'hmagem', 'hmagep', 'kmagem',
+           'kmagep', 'w1magem', 'w1magep', 'w2magem', 'w2magep', 'w3magem',
+           'w3magep', 'w4magem', 'w4magep', 'Teffem', 'Teffep', 'loggem', 'loggep',
+           'Radiusem', 'Radiusep', 'FeHem', 'FeHep', 'Distanceem', 'Distanceep',
+           'Massem', 'Massep', 'Densityem', 'Densityep', 'bmage', 'ge', 'vmage',
+           're', 'ie', 'jmage', 'hmage', 'kmage', 'w1mage', 'w2mage', 'w3mage',
+           'Teffe', 'logge', 'Radiuse', 'FeHe', 'Distancee', 'Masse', 'Densitye'],
+          dtype='object')
+    '''
+
+    #Strips online file for a given epic/tic
+    if mission.lower() in ['kep','kepler']:
+        kicinfo=GetKICinfo(icid)
+        #Checking if the object is also in the TIC:
+        ticout=Catalogs.query_criteria(catalog="Tic",coordinates=str(kicinfo['ra'])+','+str(kicinfo['dec']),
+                                       radius=20*u.arcsecond,objType="STAR",columns=['ID','KIC','Tmag','Vmag']).to_pandas()
+        if len(ticout.shape)>1:
+            ticout=ticout.loc[np.argmin(ticout['Tmag'])]
+            icid=ticout['ID']
+            mission='tess'
+        elif ticout.shape[0]>0:
+            #Not in TIC
+            return kicinfo
+    else:
+        kicinfo = None
+    assert mission.lower() in ['tess','k2','corot']
+    outdat={}
+    outdat['mission']=mission.lower()
+    #Searching TESS and K2 ExoFop for info (and TIC-8 info):
+    req=requests.get("https://exofop.ipac.caltech.edu/"+mission.lower()+"/download_target.php?id="+str(icid), timeout=120)
+    if req.status_code==200:
+        #Splitting into each 'paragraph'
+        sections=req.text.split('\n\n')
+        for sect in sections:
+            #Processing each section:
+            if sect[:2]=='RA':
+                #This is just general info - saving
+                for line in sect.split('\n'):
+                    if mission.lower()=='tess':
+                        if line[:28].strip() in cols:
+                            outdat[cols[line[:28].strip()]]=line[28:45].split('  ')[0].strip()
+                        else:
+                            outdat[re.sub('\ |\^|\/|\{|\}|\(|\)|\[|\]', '',line[:28])]=line[28:45].split('  ')[0].strip()
+                    elif mission.lower()=='k2':
+                        if line[:13].strip() in cols:
+                            outdat[cols[line[:13].strip()]]=line[13:].strip()
+                        else:
+                            outdat[re.sub('\ |\^|\/|\{|\}|\(|\)|\[|\]', '',line[:13])]=line[13:].strip()
+            elif sect[:24]=='TESS Objects of Interest':
+                #Only taking number of TOIs and TOI number:
+                outdat['n_TOIs']=len(sect.split('\n'))-2
+                outdat['TOI']=sect.split('\n')[2][:15].strip()
+            elif sect[:7]=='STELLAR':
+                #Stellar parameters
+                labrow=sect.split('\n')[1]
+                boolarr=np.array([s==' ' for s in labrow])
+                splits=[0]+list(2+np.where(boolarr[:-3]*boolarr[1:-2]*~boolarr[2:-1]*~boolarr[3:])[0])+[len(labrow)]
+                labs = [re.sub('\ |\^|\/|\{|\}|\(|\)|\[|\]', '',labrow[splits[i]:splits[i+1]]) for i in range(len(splits)-1)]
+                spec=[]
+                if mission.lower()=='tess':
+                    #Going through all sources of Stellar params:
+                    for row in sect.split('\n')[2:]:
+                        stpars=np.array([row[splits[i]:splits[i+1]].strip() for i in range(len(splits)-1)])
+                        for nl in range(len(labs)):
+                            if labs[nl].strip() not in cols:
+                                label=re.sub('\ |\/|\{|\}|\(|\)|\[|\]', '', labs[nl]).replace('Error','_err')
+                            else:
+                                label=cols[labs[nl].strip()]
+                            if not label in outdat.keys() and stpars[1]=='' and stpars[nl].strip()!='':
+                                #Stellar info just comes from TIC, so saving simply:
+                                outdat[label] = stpars[nl]
+                            elif stpars[1]!='' and stpars[nl].strip()!='':
+                                #Stellar info comes from follow-up, so saving with _INSTRUMENT:
+                                spec+=['_'+row[splits[3]:splits[4]].strip()]
+                                outdat[labs[nl]+'_'+stpars[1]] = stpars[nl]
+                elif mission.lower()=='k2':
+                    for row in sect.split('\n')[1:]:
+                        if row[splits[0]:splits[1]].strip() not in cols:
+                            label=re.sub('\ |\/|\{|\}|\(|\)|\[|\]', '', row[splits[0]:splits[1]]).replace('Error','_err')
+                        else:
+                            label=cols[row[splits[0]:splits[1]].strip()]
+
+                        if not label in outdat.keys() and row[splits[3]:splits[4]].strip()=='huber':
+                            outdat[label] = row[splits[1]:splits[2]].strip()
+                            outdat[label+'_err'] = row[splits[2]:splits[3]].strip()
+                        elif label in outdat.keys() and row[splits[3]:splits[4]].strip()!='huber':
+                            if row[splits[3]:splits[4]].strip()!='macdougall':
+                                spec+=['_'+row[splits[3]:splits[4]].strip()]
+                                #Adding extra stellar params with _user (no way to tell the source, e.g. spectra)
+                                outdat[label+'_'+row[splits[3]:splits[4]].strip()] = row[splits[1]:splits[2]].strip()
+                                outdat[label+'_err'+'_'+row[splits[3]:splits[4]].strip()] = row[splits[2]:splits[3]].strip()
+                outdat['spec']=None if len(spec)==0 else ','.join(list(np.unique(spec)))
+            elif sect[:9]=='MAGNITUDE':
+                labrow=sect.split('\n')[1]
+                boolarr=np.array([s==' ' for s in labrow])
+                splits=[0]+list(2+np.where(boolarr[:-3]*boolarr[1:-2]*~boolarr[2:-1]*~boolarr[3:])[0])+[len(labrow)]
+                for row in sect.split('\n')[2:]:
+                    if row[splits[0]:splits[1]].strip() not in cols:
+                        label=re.sub('\ |\/|\{|\}|\(|\)|\[|\]', '', row[splits[0]:splits[1]]).replace('Error','_err')
+                    else:
+                        label=cols[row[splits[0]:splits[1]].strip()]
+                    outdat[label] = row[splits[1]:splits[2]].strip()
+                    outdat[label+'_err'] = row[splits[2]:splits[3]].strip()
+
+        outdat=pd.Series(outdat,name=icid)
+
+        #Replacing err and err1/2 with em and ep
+        for col in outdat.index:
+            try:
+                outdat[col]=float(outdat[col])
+            except:
+                pass
+            if col.find('_err1')!=-1:
+                outdat=outdat.rename(index={col:'epos_'+col.replace('_err1','')})
+            elif col.find('_err2')!=-1:
+                outdat=outdat.rename(index={col:'eneg_'+col.replace('_err2','')})
+            elif col.find('_err')!=-1:
+                outdat['epos_'+col.replace('_err','')]=outdat[col]
+                outdat['eneg_'+col.replace('_err','')]=outdat[col]
+                outdat=outdat.rename(index={col:col.replace('_err','e')})
+        for col in outdat.index:
+            if 'radius' in col:
+                outdat=outdat.rename(index={col:col.replace('radius','rad')})
+            if col[-2:]=='em' and col[:-1] not in outdat.index and type(outdat[col])!=str:
+                #average of em and ep -> e
+                outdat[col[:-1]]=0.5*(abs(outdat[col])+abs(outdat[col[:-1]+'p']))
+        return outdat, kicinfo
+    elif kicinfo is not None:
+        return None, kicinfo
+    else:
+        return None, None
