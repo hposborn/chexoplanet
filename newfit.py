@@ -1050,6 +1050,28 @@ class chexo_model():
 
         from celerite2.pymc import terms as pymc_terms
         import celerite2.pymc
+        
+        lcrange=27
+        av_dur = np.average([self.planets[key]['tdur'] for key in self.planets])
+        exps=np.array([np.log((2*np.pi)/(av_dur)), np.log((2*np.pi)/(0.1*lcrange))])
+        #Max power as half the 1->99th percentile in flux
+        maxpowers=[0.5*np.ptp(np.percentile(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values,[2,98])) for scope in self.lcs if scope!='cheops']
+        logmaxpowers=[np.log(0.5*np.ptp(np.percentile(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values,[1,99]))) for scope in self.lcs if scope!='cheops']
+        #([np.nanstd(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values) for scope in self.lcs]))
+        
+        #Min power as 2x the average point-to-point displacement
+        logminpowers=[np.log(2*np.nanmedian(abs(np.diff(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values)))) for scope in self.lcs if scope!='cheops']
+        minpowers=[0.5*np.nanmedian(abs(np.diff(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values))) for scope in self.lcs if scope!='cheops']
+        span=abs(np.min(logmaxpowers)-np.max(logminpowers))
+        
+        allt=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'time'].values for scope in self.lcs if scope!="cheops"])
+        ally=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
+        allyerr=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux_err'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
+        che_ix = list(self.lcs.keys()).index('cheops')
+        allsrcs=np.hstack([np.tile(iscope,len(self.lc_fit[list(self.lcs.keys())[iscope]]['time'])) for iscope in np.arange(len(self.lcs)) if iscope!=che_ix])[np.argsort(allt)]
+        allsrcs=np.column_stack([np.isin(allsrcs,i) for i in np.arange(len(self.lcs)) if i!=che_ix])
+        allt=np.sort(allt)
+        self.logger.debug(allyerr)
 
         with pm.Model() as ootmodel:
             logs={}
@@ -1060,62 +1082,52 @@ class chexo_model():
                                             sigma=1,testval=np.log(np.std(self.lc_fit[scope]['flux']))+1)
             
             #Initialising the SHO frequency
-            lcrange=27
-            av_dur = np.average([self.planets[key]['tdur'] for key in self.planets])
-            exps=np.array([np.log((2*np.pi)/(av_dur)), np.log((2*np.pi)/(0.1*lcrange))])
             if logprior_func.lower()=='pareto':
                 log_w0 = pm.Pareto("log_w0", m=exps[1], alpha=0.1*np.ptp(exps), testval=exps[1]+0.15*np.ptp(exps))
                 self.logger.debug("w0 m: "+str(exps[1])+"  alpha: "+str(np.ptp(exps)/3)+"  testval: "+str(exps[1]+0.45*np.ptp(exps))+"  test per "+str(np.pi*2/(exps[1]+0.45*np.ptp(exps))))
                 w0 = pm.Deterministic("w0", pm.math.exp(log_w0))
+                log_sigma = pm.Pareto("log_sigma", m=np.max(logminpowers), alpha=0.1*span, testval=np.max(logminpowers)+0.5*span)
+                self.logger.debug("logsigma m: "+str(np.max(logminpowers))+"   alpha: "+str(00.2*span)+"  start: "+str(np.max(logminpowers)+0.5*span))
+                sigma = pm.Deterministic("sigma", pm.math.exp(log_sigma))
+
             elif logprior_func.lower()=='normal':
                 log_w0 = pm.Normal("log_w0", mu=exps[1]+0.3*np.ptp(exps), sigma=0.05*np.ptp(exps), testval=exps[1]+0.15*np.ptp(exps))
                 self.logger.debug("w0 mu: "+str((exps[0]+exps[1])/2)+"  sigma: "+str(np.ptp(exps)/5)+"  testval: "+str(exps[1]+0.4*np.ptp(exps))+"  test per "+str(np.pi*2/(exps[1]+0.2*np.ptp(exps))))
                 w0 = pm.Deterministic("w0", pm.math.exp(log_w0))
-            elif logprior_func.lower()=='InverseGamma':
-                success=False;target=0.01
-                while not success and target<0.21:
-                    try:
-                        low=(2*np.pi)/(0.25*lcrange/(target/0.05))
-                        up=(2*np.pi)/(25*av_dur*(target/0.05))
-                        w0 = pm.InverseGamma("w0",testval=(2*np.pi)/10,
-                                             **pmx.utils.estimate_inverse_gamma_parameters(lower=low,upper=up,target=target))
-                        success=True
-                    except:
-                        target*=1.15
-                    self.logger.debug("w0 InverseGamma: "+str(success)+" low "+str(low)+" up "+str(up)+" target "+target)
-                assert success, "InverseGamma estimation of power failed"
-            #Initialising the power:
-            
-            #Max power as half the 1->99th percentile in flux
-            logmaxpowers=[np.log(0.5*np.ptp(np.percentile(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values,[1,99]))) for scope in self.lcs]
-            #([np.nanstd(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values) for scope in self.lcs]))
-            
-            #Min power as 2x the average point-to-point displacement
-            logminpowers=[np.log(2*np.nanmedian(abs(np.diff(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values)))) for scope in self.lcs]
-            span=abs(np.min(logmaxpowers)-np.max(logminpowers))
-
-            if logprior_func=='pareto':
-                log_power = pm.Pareto("log_power", m=np.max(logminpowers), alpha=0.1*span, testval=np.max(logminpowers)+0.5*span)
-                self.logger.debug("logpower m: "+str(np.max(logminpowers))+"   alpha: "+str(00.2*span)+"  start: "+str(np.max(logminpowers)+0.5*span))
-                power = pm.Deterministic("power", pm.math.exp(log_power))
-            elif logprior_func.lower()=='normal':
-                log_power = pm.Normal("log_power", mu=(np.min(logmaxpowers)+np.max(logminpowers))/2, sigma=0.2*abs(np.min(logmaxpowers)-np.max(logminpowers)),testval=np.min(logmaxpowers)-0.1)
-                self.logger.debug("logpower mu"+str((np.min(logmaxpowers)+np.max(logminpowers))/2)+"   sigma: "+str(0.2*abs(np.min(logmaxpowers)-np.max(logminpowers)))+"  start: "+str(np.min(logmaxpowers)-0.1))
-                power = pm.Deterministic("power", pm.math.exp(log_power))
+                log_sigma = pm.Normal("log_sigma", mu=(np.min(logmaxpowers)+np.max(logminpowers))/2, sigma=0.2*abs(np.min(logmaxpowers)-np.max(logminpowers)),testval=np.min(logmaxpowers)-0.1)
+                self.logger.debug("logsigma mu"+str((np.min(logmaxpowers)+np.max(logminpowers))/2)+"   sigma: "+str(0.2*abs(np.min(logmaxpowers)-np.max(logminpowers)))+"  start: "+str(np.min(logmaxpowers)-0.1))
+                sigma = pm.Deterministic("sigma", pm.math.exp(log_sigma))
 
             elif logprior_func.lower()=='inversegamma':
-                success=False;target=0.01
-                while not success and target<0.21:
-                    try:
-                        power = pm.InverseGamma("power",testval=np.max(logminpowers)*5,
-                                                **pmx.utils.estimate_inverse_gamma_parameters(lower=np.max(logminpowers),
-                                                                                    upper=np.min(logmaxpowers)/np.sqrt(target/0.01),
-                                                                                    target=2*target))
-                        success=True
-                    except:
-                        target*=1.15
-                    self.logger.debug("power InverseGamma: "+str(success)+" min "+str(np.max(logminpowers))+" max "+str(np.min(logmaxpowers)/np.sqrt(target/0.01))+" target "+str(target))
-                assert success, "InverseGamma estimation of power failed"
+                target=0.01
+                success=np.array([False,False]);target=0.01
+                while np.any(~success) and target<0.2:
+                    if not success[0]:
+                        try:
+                            low=(2*np.pi)/(abs(np.random.normal(3,1)))
+                            #itarg=abs(np.random.normal(target,0.5*target))
+                            w0 = pm.InverseGamma("w0", **pmx.utils.estimate_inverse_gamma_parameters(lower=low,
+                                                                                                upper=(2*np.pi)/(av_dur*((0.03/target)**0.5)),
+                                                                                                target=0.01))
+                            success[0]=True
+                            self.logger.debug("w0 InverseGamma: "+str(success)+" low "+str((2*np.pi)/(5))+" up "+str((2*np.pi)/(av_dur*(0.03/target)))+" target "+str(target))
+                        except:
+                           success[0]=False
+                            
+                    if not success[1]:
+                        try:
+                            sigma = pm.InverseGamma("sigma",testval=np.max(minpowers)*5,
+                                                    **pmx.utils.estimate_inverse_gamma_parameters(lower=np.min(minpowers),
+                                                                                        upper=np.min(maxpowers)*np.sqrt(target/0.1),
+                                                                                        target=0.01))
+                            success[1]=True
+                            self.logger.debug("sigma InverseGamma: "+str(success)+" min "+str(np.max(logminpowers))+" max "+str(np.min(logmaxpowers)/np.sqrt(target/0.01))+" target "+str(target))
+                        except:
+                            success[1]=False
+                    target*=1.15
+                assert np.all(success), "InverseGamma estimation of "+"&".join(list(np.array(["w0","sigma"])[~success]))+" failed"
+            else:
+                print("No log prior func selected...")
             # power=None
             # while not success and target<0.25:
             #     try:
@@ -1134,39 +1146,18 @@ class chexo_model():
             #     logpower = pm.Normal("logpower", mu=np.log(minpower)+0.3333*logspan, sigma=logspan/3)
             #     power = pm.Deterministic("power", pm.math.exp(logpower))
             # self.logger.debug("logpower mu:", np.log(minpower)+0.3333*logspan,"sigma:",logspan/3)
-            S0 = pm.Deterministic("S0", power/(w0**4))
-
             # GP model for the light curve
-            kernel = pymc_terms.SHOTerm(S0=S0, w0=w0, Q=1/np.sqrt(2))
+            kernel = pymc_terms.SHOTerm(sigma=sigma, w0=w0, Q=1/np.sqrt(2))
             means={}
+            gps={}
             for scope in self.lcs:
                 if scope!="cheops":
                     means[scope] = pm.Normal(scope+"_mean", mu=0.0, sigma=10.0, testval=np.nanmedian(self.lcs[scope]['flux']))
-            gp = celerite2.pymc.GaussianProcess(kernel)
-            allt=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'time'].values for scope in self.lcs if scope!="cheops"])
-            ally=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
-            allyerr=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux_err'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
-            allsrcs=np.hstack([np.tile(iscope,len(self.lc_fit[list(self.lcs.keys())[iscope]]['time'])) for iscope in np.arange(len(self.lcs))])[np.argsort(allt)]
-            allsrcs=np.column_stack([np.isin(allsrcs,i) for i in np.arange(len(logs))])
-            allt=np.sort(allt)
-            self.logger.debug(allyerr)
-
-            mean_arr = pm.math.dot(allsrcs,[means[scope] for scope in logs])
-            gp.compute(allt, diag=allyerr ** 2 + pm.math.dot(allsrcs,pm.math.exp([logs[scope] for scope in logs])**2), quiet=True)
-            loglik=pm.Normal("loglik", mu=gp.predict(ally-mean_arr, return_var=False)+mean_arr,
-                             sigma=allyerr, observed=ally)
-            #pm. gp.log_likelihood(y)
-            #gp.marginal("obs", observed=ally)
-            
-            #photgp_model_x = pm.Deterministic("photgp_model_x", gp.predict(self.lc_fit['flux'][~self.lc_fit['in_trans_all']], t=self.lc_fit['time'][~self.lc_fit['in_trans_all']], return_var=False))
-
-            #optimizing:
-            #start = ootmodel.test_point
-            #self.logger.debug(ootmodel.check_test_point())
+                    gps[scope] = celerite2.pymc.GaussianProcess(kernel, mean=means[scope])
+                    gps[scope].compute(allt, yerr=np.sqrt(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux_err'].values ** 2 + logs[scope]**2), quiet=True)
+                    loglik=gps[scope].marginal("loglik",observed=self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values)
             oot_soln = pmx.optimize()#start=start)
             self.logger.debug(ootmodel.debug())
-            #self.logger.debug(ootmodel.test_point)
-            #self.logger.debug(ootmodel.check_test_point())
 
         #Sampling:
         with ootmodel: 
@@ -1541,11 +1532,11 @@ class chexo_model():
                     varname="dfd"+linpar+"_"+"".join(list(fk_bool.astype(str)))
                     self.cheops_linear_decorrs[varname]=[linpar,list(self.cheops_filekeys[np.array(dists)<2])]
                     if linpar[:3]=="sin":
-                        combdat=np.hstack((np.sin(float(int(linpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],linpar[-3:]].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]))
+                        combdat=np.hstack([np.sin(float(int(linpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],linpar[-3:]].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]])
                     elif linpar[:3]=="cos":
-                        combdat=np.hstack((np.cos(float(int(linpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],linpar[-3:]].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]))
+                        combdat=np.hstack([np.cos(float(int(linpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],linpar[-3:]].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]])
                     else:
-                        combdat=np.hstack((self.lcs["cheops"].loc[self.cheops_fk_mask[fk],linpar].values for fk in self.cheops_filekeys[np.array(dists)<2]))
+                        combdat=np.hstack([self.lcs["cheops"].loc[self.cheops_fk_mask[fk],linpar].values for fk in self.cheops_filekeys[np.array(dists)<2]])
                     self.norm_cheops_dat['all'][linpar]=(combdat - np.nanmedian(combdat))/np.nanstd(combdat)
 
             for quadpar in all_quad_params:
@@ -1566,11 +1557,11 @@ class chexo_model():
                     varname="d2fd"+quadpar+"2_"+"".join(list(fk_bool.astype(str)))
                     self.cheops_quad_decorrs[varname]=[quadpar,list(self.cheops_filekeys[np.array(dists)<2])]
                     if quadpar[:3]=="cos":
-                        combdat=np.hstack((np.sin(float(int(quadpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],quadpar].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]))
+                        combdat=np.hstack([np.sin(float(int(quadpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],quadpar].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]])
                     elif quadpar[:3]=="sin":
-                        combdat=np.hstack((np.cos(float(int(quadpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],quadpar].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]))
+                        combdat=np.hstack([np.cos(float(int(quadpar[3]))*self.lcs["cheops"].loc[self.cheops_fk_mask[fk],quadpar].values*np.pi/180) for fk in self.cheops_filekeys[np.array(dists)<2]])
                     else:
-                        combdat=np.hstack((self.lcs["cheops"].loc[self.cheops_fk_mask[fk],quadpar].values for fk in self.cheops_filekeys[np.array(dists)<2]))
+                        combdat=np.hstack([self.lcs["cheops"].loc[self.cheops_fk_mask[fk],quadpar].values for fk in self.cheops_filekeys[np.array(dists)<2]])
                     self.norm_cheops_dat['all'][quadpar]=(combdat - np.nanmedian(combdat))/np.nanstd(combdat)
         
         self.phi_model_ix=self.make_cheops_phi_model_ix()
@@ -2038,15 +2029,15 @@ class chexo_model():
                     # else:
                     #    self.model_params[scope+'_logs'] = pm.Normal(scope+'_logs', mu=np.log(np.nanmedian(abs(np.diff(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux'].values)))), sigma=3)
 
-                minmax['S0']=np.percentile(self.oot_gp_trace.posterior["S0"],[0.5,99.5])
-                self.model_params['phot_S0']=pm.Interpolated("phot_S0",x_points=np.linspace(minmax['S0'][0],minmax['S0'][1],201)[1::2],
-                                        pdf_points=np.histogram(self.oot_gp_trace.posterior["S0"],np.linspace(minmax['S0'][0],minmax['S0'][1],101))[0]
+                minmax['sigma']=np.percentile(self.oot_gp_trace.posterior["sigma"],[0.5,99.5])
+                self.model_params['phot_sigma']=pm.Interpolated("phot_sigma",x_points=np.linspace(minmax['sigma'][0],minmax['sigma'][1],201)[1::2],
+                                        pdf_points=np.histogram(self.oot_gp_trace.posterior["sigma"],np.linspace(minmax['sigma'][0],minmax['sigma'][1],101))[0]
                                         )
                 minmax["w0"]=np.percentile(self.oot_gp_trace.posterior["w0"],[0.5,99.5])
                 self.model_params['phot_w0']=pm.Interpolated("phot_w0",x_points=np.linspace(minmax["w0"][0],minmax["w0"][1],201)[1::2],
                                             pdf_points=np.histogram(self.oot_gp_trace.posterior["w0"],np.linspace(minmax["w0"][0],minmax["w0"][1],101))[0]
                                             )
-                self.model_params['phot_kernel'] = pymc_terms.SHOTerm(S0=self.model_params['phot_S0'], 
+                self.model_params['phot_kernel'] = pymc_terms.SHOTerm(sigma=self.model_params['phot_sigma'], 
                                                                         w0=self.model_params['phot_w0'], Q=1/np.sqrt(2))#, mean = phot_mean)
 
                 for scope in self.lcs:
@@ -2058,8 +2049,9 @@ class chexo_model():
                                                 x_points=np.linspace(minmax[scope+'_mean'][0],minmax[scope+'_mean'][1],201)[1::2],
                                                 pdf_points=np.histogram(self.oot_gp_trace.posterior[scope+'_mean'],np.linspace(minmax[scope+'_mean'][0],minmax[scope+'_mean'][1],101))[0]
                                                 )
-                        self.model_params[scope+'_gp'] = celerite2.pymc.GaussianProcess(self.model_params['phot_kernel'], self.lc_fit[scope]['time'].values, mean=self.model_params[scope+'_mean'],
-                                                                                        diag=self.lc_fit[scope]['flux_err'].values ** 2 + pm.math.exp(self.model_params[scope+'_logs'])**2)
+                        self.model_params[scope+'_gp'] = celerite2.pymc.GaussianProcess(self.model_params['phot_kernel'], self.lc_fit[scope]['time'].values, mean=self.model_params[scope+'_mean'])#,
+                        #                                                                yerr=np.sqrt(self.lc_fit[scope]['flux_err'].values ** 2 + pm.math.exp(self.model_params[scope+'_logs'])**2))
+                        self.model_params[scope+'_gp'].compute(self.lc_fit[scope]['time'].values,yerr=np.sqrt(self.lc_fit[scope]['flux_err'].values ** 2 + pm.math.exp(self.model_params[scope+'_logs'])**2))
                 #pm.math.dot(self.lc_fit_src_index,pm.math.exp([logs[scope] for scope in logs])
                 #self.model_params['gp_tess'].compute(self.lc_fit['time'].values, , quiet=True)
             else:
@@ -2121,7 +2113,7 @@ class chexo_model():
                 self.model_params['cheops_summodel_x']={}
                 self.model_params['cheops_llk']={}
                 if self.fit_phi_gp:
-                    self.model_params['rollangle_logpower'] = pm.Normal("rollangle_logpower",mu=-6,sigma=1)
+                    self.model_params['rollangle_logsigma'] = pm.Normal("rollangle_logsigma",mu=-6,sigma=1)
 
                     # self.model_params['rollangle_power'] = pm.InverseGamma("rollangle_power",testval=np.nanmedian(abs(np.diff(self.lcs["cheops"]['flux']))), 
                     #                                   **pmx.estimate_inverse_gamma_parameters(
@@ -2131,7 +2123,7 @@ class chexo_model():
                     #                                                        **pmx.estimate_inverse_gamma_parameters(lower=np.log(30), upper=np.log(110)))
                     self.model_params['rollangle_logw0'] = pm.Normal('rollangle_logw0',mu=np.log((2*np.pi)/100),sigma=1)
                     #self.model_params['rollangle_w0'] = pm.InverseGamma("rollangle_w0", testval=(2*np.pi)/(lowerwl*1.25), **pmx.estimate_inverse_gamma_parameters(lower=(2*np.pi)/100,upper=(2*np.pi)/lowerwl))
-                    self.model_params['rollangle_S0'] = pm.Deterministic("rollangle_S0", pm.math.exp(self.model_params['rollangle_logpower'])/(pm.math.exp(self.model_params['rollangle_logw0'])**4))
+                    self.model_params['rollangle_sigma'] = pm.Deterministic("rollangle_sigma", pm.math.exp(self.model_params['rollangle_logsigma']))
                     self.model_params['gp_rollangle_model_phi']={}
                     if self.phi_model_type=='individual' or len(self.cheops_filekeys)==1:
                         self.model_params['rollangle_kernels']={}
@@ -2245,7 +2237,7 @@ class chexo_model():
                     self.model_params['cheops_planets_gaps'][pl] = pm.Deterministic("cheops_planets_gaps_"+pl,xo.LimbDarkLightCurve(self.model_params['u_stars']["cheops"]).get_light_curve(orbit=self.model_params['orbit'][pl], r=self.model_params['rpl'][pl]/109.2,
                                                                                                         t=self.cheops_gap_timeseries.astype(np.float64))[:,0]*1000/self.model_params['cheops_mult'])
                 if self.fit_phi_gp:
-                    self.model_params['rollangle_kernels'] = pymc_terms.SHOTerm(S0=self.model_params['rollangle_S0'], w0=pm.math.exp(self.model_params['rollangle_logw0']), Q=1/np.sqrt(2))#, mean = phot_mean)
+                    self.model_params['rollangle_kernels'] = pymc_terms.SHOTerm(sigma=self.model_params['rollangle_sigma'], w0=pm.math.exp(self.model_params['rollangle_logw0']), Q=1/np.sqrt(2))#, mean = phot_mean)
 
                 if self.fit_phi_gp and self.phi_model_type=="common" and len(self.cheops_filekeys)>1:
                     #Trying a new tack - binning to 2.5-degree bins.
@@ -2262,8 +2254,8 @@ class chexo_model():
                     self.model_params['gp_rollangles'] = celerite2.pymc.GaussianProcess(self.model_params['rollangle_kernels'], 
                                                                                         np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi'][:,None]*self.cheops_binphi_2d_index,axis=0), mean=0.0,
                                                                                         diag=(np.sum(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'flux_err'][:,None]*self.cheops_binphi_2d_index**1.5,axis=0))** 2 + \
-                                                                                            (pm.math.sum(pm.math.exp(self.model_params['cheops_logs'])*self.cheops_binphi_2d_index**1.5,axis=0))**2)#Adding **1.5 as we want an extra 1/N**0.5 (instead of just 1/N in the average). 
-                                                                                            #Also including these 1/N**1.5 terms in the jitter to ensure jitter is per-point
+                                                                                             (pm.math.sum(pm.math.exp(self.model_params['cheops_logs'])*self.cheops_binphi_2d_index**1.5,axis=0))**2)#Adding **1.5 as we want an extra 1/N**0.5 (instead of just 1/N in the average). 
+                                                                                             #Also including these 1/N**1.5 terms in the jitter to ensure jitter is per-point
                     #self.model_params['gp_rollangles'].compute(np.sort(self.lcs["cheops"].loc[self.lcs["cheops"]['mask'],'phi'].values),
                     #                                           diag=..., quiet=True)
                 elif self.fit_phi_gp and "split" in self.phi_model_type and len(self.cheops_filekeys)>1:
@@ -2341,8 +2333,8 @@ class chexo_model():
                 self.model_params[scope+'_summodel_x'] = pm.Deterministic(scope+"_summodel_x", pm.math.sum([self.model_params[scope+'_model_x'][pl] for pl in self.planets],axis=0))
                 if self.fit_gp and scope!="cheops":
                     self.model_params[scope+'_gp_model_x'] = pm.Deterministic(scope+"_gp_model_x", self.model_params[scope+'_gp'].predict(self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x'], t=self.lc_fit[scope]['time'].values, return_var=False))
-                    self.model_params[scope+'_llk'] = pm.Normal(scope+'_llk', mu=self.model_params[scope+'_gp_model_x']+self.model_params[scope+'_summodel_x'],sigma=self.lc_fit[scope]['flux_err'].values, observed=self.lc_fit[scope]['flux'].values)
-                    
+                    #self.model_params[scope+'_llk'] = pm.Normal(scope+'_llk', mu=self.model_params[scope+'_gp_model_x']+self.model_params[scope+'_summodel_x'],sigma=self.lc_fit[scope]['flux_err'].values, observed=self.lc_fit[scope]['flux'].values)
+                    self.model_params[scope+'_llk'] = self.model_params[scope+'_gp'].marginal(scope+'_llk',observed=self.lc_fit[scope]['flux'].values-self.model_params[scope+'_summodel_x'])
                 elif scope!="cheops":
                     sigma2s[scope] = self.lc_fit[scope]['flux_err'].values ** 2 + pm.math.exp(self.model_params[scope+'_logs'])**2
                     self.model_params[scope+'_llk'] = pm.Potential(scope+'_llk', -0.5 * (self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x']) ** 2/sigma2s[scope] + np.log(sigma2s[scope]))
@@ -3124,7 +3116,10 @@ class chexo_model():
                 tab+=[['kepler_logs','Kepler jitter $\\log{\\sigma_{\\rm Kepler}}$','','interp',np.nanmedian(self.oot_gp_trace.posterior["kepler_logs"]),np.nanstd(self.oot_gp_trace.posterior["kepler_logs"])]]
                 tab+=[['kepler_mean','Kepler mean $\\mu_{\\rm Kepler}}$','','interp',np.nanmedian(self.oot_gp_trace.posterior["kepler_mean"]),np.nanstd(self.oot_gp_trace.posterior["kepler_mean"])]]
 
-            tab+=[['phot_S0','Photometric GP term $S_0$','','interp',np.nanmedian(self.oot_gp_trace.posterior["S0"]),np.nanstd(self.oot_gp_trace.posterior["S0"])]]
+            if "S0" in self.oot_gp_trace.posterior:
+                tab+=[['phot_S0','Photometric GP term $S_0$','','interp',np.nanmedian(self.oot_gp_trace.posterior["S0"]),np.nanstd(self.oot_gp_trace.posterior["S0"])]]
+            elif "sigma" in self.oot_gp_trace.posterior:
+                tab+=[['phot_sigma','Photometric GP term $\sigma_0$','','interp',np.nanmedian(self.oot_gp_trace.posterior["sigma"]),np.nanstd(self.oot_gp_trace.posterior["sigma"])]]
             tab+=[['phot_w0','Photometric GP term $\\omega_0$','','interp',np.nanmedian(self.oot_gp_trace.posterior["w0"]),np.nanstd(self.oot_gp_trace.posterior["w0"])]]
         else:
             if 'tess' in self.lcs:
