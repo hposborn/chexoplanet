@@ -213,6 +213,8 @@ class chexo_model():
         end_date - Date until when to access CHEOPS data
         vmag - If we are only taking the data from file, we need the vmag for PIPE
         """
+        self.update(**kwargs)
+
         catname= self.name if catname is None else catname
         if do_search and fks is not None:
             #Checking the required filekeys aren't already downloaded...
@@ -614,7 +616,7 @@ class chexo_model():
             v3list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-*V0300.fits"))
             if len(v3list)==0:
                 #No V0300 - need to use 
-                v2list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V020.fits"))
+                v2list=glob.glob(os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits"))
                 assert len(v2list)>0, "Either V0200 and V0300 lightcurve files must be found within "+os.path.join(out_dir,filekey,"*SCI_COR_Lightcurve-DEFAULT_V0200.fits")
                 fileloc = v2list[0]
             else:
@@ -622,24 +624,28 @@ class chexo_model():
                 v3dic={}
                 self.chlcstats[filekey]={}
                 aps=[]
+                self.logger.debug("Looping through DRP lcs="+",".join(v3list))
                 for v in v3list:
-                    ap=v.split("-R")[-1].split("_")[0]
-                    aps+=[ap]
-                    v3dic[ap]=v
-                    f=Table.read(v).to_pandas()
-                    highlow=np.nanpercentile(f['FLUX'],[2.5,97.5])
-                    highlowcutmask=(f['FLUX']>highlow[0])&(f['FLUX']<highlow[1])&np.isfinite(f['FLUX'])
-                    self.chlcstats[filekey][ap] = {'file':v,'flux':f['FLUX'],'flux_err':f['FLUXERR'],'aperture':ap,
-                                                   'medflux':np.nanmedian(f['FLUX'][highlowcutmask]), 'std':np.nanstd(f['FLUX'][highlowcutmask])}
-                    self.chlcstats[filekey][ap]['rel_std'] = np.nanstd(f['FLUX'][highlowcutmask]/self.chlcstats[filekey][ap]['medflux'])
-                    self.chlcstats[filekey][ap]['rel_med_abs_diff'] = np.nanmedian(abs(np.diff(f['FLUX'][highlowcutmask]/self.chlcstats[filekey][ap]['medflux'])))
+                    try:
+                        ap=v.split("-R")[-1].split("_")[0]
+                        aps+=[ap]
+                        v3dic[ap]=v
+                        f=Table.read(v,format='fits').to_pandas()
+                        highlow=np.nanpercentile(f['FLUX'],[2.5,97.5])
+                        highlowcutmask=(f['FLUX']>highlow[0])&(f['FLUX']<highlow[1])&np.isfinite(f['FLUX'])
+                        self.chlcstats[filekey][ap] = {'file':v,'flux':f['FLUX'],'flux_err':f['FLUXERR'],'aperture':ap,
+                                                    'medflux':np.nanmedian(f['FLUX'][highlowcutmask]), 'std':np.nanstd(f['FLUX'][highlowcutmask])}
+                        self.chlcstats[filekey][ap]['rel_std'] = np.nanstd(f['FLUX'][highlowcutmask]/self.chlcstats[filekey][ap]['medflux'])
+                        self.chlcstats[filekey][ap]['rel_med_abs_diff'] = np.nanmedian(abs(np.diff(f['FLUX'][highlowcutmask]/self.chlcstats[filekey][ap]['medflux'])))
+                    except:
+                        print(v)
                 best=aps[np.argmin([1/(1/self.chlcstats[filekey][a]['rel_std']**2+1/self.chlcstats[filekey][a]['rel_med_abs_diff']**2)**0.5 for a in v3dic])]
                 fileloc = v3dic[best]
                 
             sources={'time':'BJD_TIME', 'flux':'FLUX', 'flux_err':'FLUXERR', 
                      'bg':'BACKGROUND', 'centroidx':'CENTROID_X', 
                      'centroidy':'CENTROID_Y', 'deltaT':None, 'smear':'SMEARING_LC','phi':'ROLL_ANGLE', }
-        f=Table.read(fileloc).to_pandas()
+        f=Table.read(fileloc,format='fits').to_pandas()
         #fits.open(fileloc)
         iche=pd.DataFrame()
         for s in sources:
@@ -2352,7 +2358,7 @@ class chexo_model():
             
             #Combined 
             if 'cheops' in self.lcs and len(self.lcs)>1:
-                self.model_params['log_likelihood']=pm.Deterministic("log_likelihood",pm.math.sum([pm.math.sum(self.model_params[scope+"_llk"]) for scope in self.lcs if scope!='cheops'])+pm.math.sum([self.model_params["cheops_llk"][fk] for fk in self.model_params["cheops_llk"]]))
+                self.model_params['log_likelihood']=pm.Deterministic("log_likelihood",pm.math.sum([pm.math.sum(self.model_params[scope+"_llk"]) for scope in self.lcs if scope!='cheops'])+pm.math.sum([pm.math.sum(self.model_params["cheops_llk"][fk]) for fk in self.model_params["cheops_llk"]]))
             elif 'cheops' in self.lcs and len(self.lcs)==1:
                 self.model_params['log_likelihood']=pm.Deterministic("log_likelihood",pm.math.sum([pm.math.sum(self.model_params["cheops_llk"][fk]) for fk in self.model_params["cheops_llk"]]))
             else:
@@ -3396,6 +3402,19 @@ class chexo_model():
         self.trace.to_netcdf(savefile.replace("_model.pkl","_trace.nc"))
         del bytes_out
         #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
+    
+    def plot_all(self,**kwargs):
+        if not hasattr(self,"models_out") or "cheops" not in self.models_out or (hasattr(self,'trace') and "cheops_lindetrend_+1sig" not in self.models_out["cheops"]):
+            self.make_cheops_timeseries(**kwargs)
+        for scope in self.lcs:
+            if scope=='cheops':
+                if self.fit_phi_gp:
+                    self.plot_rollangle_model(**kwargs)
+                self.plot_cheops(**kwargs)
+            else:
+                self.plot_phot(scope,**kwargs)
+        self.plot_transits_fold(**kwargs)
+
 
     def plot_rollangle_model(self,save=True,savetype='png',save_suffix=None,**kwargs):
         """Plot the CHEOPS model as a function of rollangle. Works for either spline or GP.
@@ -3621,6 +3640,7 @@ class chexo_model():
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+save_suffix+"_cheops_plots"+save_suffix+"."+savetype),transparent=transparent)
     
     def plot_cheops_absphot(self,save=True,savetype='png',save_suffix=None,split_by_sects=True,ylim=None):
+        plt.clf()
         #Plotting absolute photometry
         self.lcs['cheops']['raw_flux_medium_offset'] = np.zeros(len(self.lcs['cheops']))
         for fk in self.cheops_filekeys:

@@ -179,18 +179,18 @@ def check_past_PIPE_params(folder):
     #Now we need to pick the most common optimisation approach
     pkey_modes={'im':{},'sa':{}}
     
-    if np.sum([len(past_fk_params[fk]['sa']) for fk in past_fk_params[ifk]])>0:
+    if np.sum([len(past_fk_params[fk]['sa']) for fk in past_fk_params])>0:
         pkey_modes['sa']['exists']=True
         for pkey in np.unique(allkeys['sa']):
-            all_pars=[past_fk_params[fk]['sa'][pkey] for fk in past_fk_params[ifk] if pkey in past_fk_params[fk]['sa']]
+            all_pars=[past_fk_params[fk]['sa'][pkey] for fk in past_fk_params if pkey in past_fk_params[fk]['sa']]
             pkey_modes['sa'][pkey]=max(set(all_pars), key=all_pars.count)
     else:
         pkey_modes['sa']['exists']=False
     
-    if np.sum([len(past_fk_params[fk]['im']) for fk in past_fk_params[ifk]])>0:
+    if np.sum([len(past_fk_params[fk]['im']) for fk in past_fk_params])>0:
         pkey_modes['im']['exists']=True
         for pkey in np.unique(allkeys['im']):
-            all_pars=[past_fk_params[fk]['im'][pkey] for fk in past_fk_params[ifk] if pkey in past_fk_params[fk]['im']]
+            all_pars=[past_fk_params[fk]['im'][pkey] for fk in past_fk_params if pkey in past_fk_params[fk]['im']]
             pkey_modes['im'][pkey]=max(set(all_pars), key=all_pars.count)
     else:
         pkey_modes['im']['exists']=False
