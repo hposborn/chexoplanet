@@ -44,6 +44,7 @@ setuptools.setup(
                       'everest-pipeline',
                       'bs4',
                       'lightkurve',
+                      'tess-point',
                       'iteround',
                       'bokeh'],
     classifiers=[
