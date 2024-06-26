@@ -4623,7 +4623,7 @@ class chexo_model():
         #for mod in self.models_out:
         #    self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+mod+"_timeseries.csv"))
 
-    def PlotCorner(self):
+    def plot_corner(self):
         """
         Plotting corner for each planet.
         """
@@ -4646,7 +4646,8 @@ class chexo_model():
             fig.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_corner_"+pl+".pdf"))
         #Now doing TESS/CHEOPS stuff
         if self.fit_gp:
-            fig=corner.corner(self.trace,var_names=['phot_S0','phot_w0','tess_logs'])
+            fig=corner.corner(self.trace,var_names=['phot_sigma','phot_w0','tess_logs'])
+            #fig=corner.corner(self.trace,var_names=['phot_S0','phot_w0','tess_logs'])
             fig.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_corner_tessgp.pdf"))
         if "cheops" in self.lcs:
             ivars=list(self.cheops_quad_decorrs.keys())+list(self.cheops_linear_decorrs.keys())+['cheops_logs']+["cheops_mean_"+str(fk) for fk in self.cheops_filekeys]
