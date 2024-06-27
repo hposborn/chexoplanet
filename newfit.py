@@ -68,6 +68,7 @@ class chexo_model():
                        'bin_size':1/48,         # bin_size - float - Size of binned points (defaults to 30mins)
                        'bin_oot':True,          # bin_oot - bool - Bin points outside the cut_distance to 30mins
                        'pred_all':False,        # Do we predict all time array, or only a cut-down version?
+                       'n_cores':6,             # Number of cores with which to sample
                        'use_bayes_fact':True,   # Determine the detrending factors to use with a Bayes Factor
                        'use_signif':False,      # Determine the detrending factors to use by simply selecting those with significant non-zero coefficients
                        'signif_thresh':1.25,    # Threshold for detrending parameters in sigma
@@ -396,7 +397,9 @@ class chexo_model():
             self.logger.debug("Overwriting stored PIPE data as either overwrite=True or no fits files generated in previous PIPE run. Filekey="+fk)
             os.system("rm -r "+os.path.join(out_dir,fk,"Outdata"))
         #print(glob.glob(os.path.join(out_dir,fk,"CH_PR*SCI_COR_Lightcurve-RINF_V0?00.fits")))
-        ifitfile=fits.open(glob.glob(os.path.join(out_dir,fk,"CH_PR*SCI_COR_Lightcurve-RINF_V0?00.fits"))[0])
+        fitslist=glob.glob(os.path.join(out_dir,fk,"CH_PR*SCI_COR_Lightcurve-RINF_V0?00.fits"))
+        self.logger.debug("Looking for lightcurve files in "+os.path.join(out_dir,fk,"CH_PR*SCI_COR_Lightcurve-RINF_V0?00.fits")+" = "+",".join(fitslist))
+        ifitfile=fits.open(fitslist[0])
         exptime = float(ifitfile[1].header['EXPTIME'])
         im_thresh=22.65 #Threshold in EXPTIME below which imagettes (and not just sub-arrays) are generated
         #print(os.path.exists(os.path.join(out_dir,fk,"Outdata")),os.path.join(out_dir,fk,"Outdata"),overwrite)
@@ -1391,7 +1394,8 @@ class chexo_model():
                                             [cheops_obs_mean,cheops_logs] + \
                                             [quad_decorr_dict[par] for par in quad_decorr_dict])
             comb_soln = pmx.optimize(start=comb_soln)
-            self.cheops_init_trace[savefname[1:]]= pm.sample(tune=300, draws=400, chains=3, cores=3, start=comb_soln, return_inferencedata=True)
+            #self.logger.debug(mod.)
+            self.cheops_init_trace[savefname[1:]]= pm.sample(tune=300, draws=400, chains=self.n_cores, cores=self.n_cores, start=comb_soln, return_inferencedata=True)
 
             pickle.dump(self.cheops_init_trace[savefname[1:]],open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"wb"))
         return savefname[1:]
@@ -2482,14 +2486,12 @@ class chexo_model():
         elif len(self.cheops_filekeys)>0 and self.fit_phi_spline:
             self.check_rollangle_spline(**kwargs)
     
-    def sample_model(self,n_tune_steps=1200,n_draws=998,n_cores=3,n_chains=2,cheops_groups="all",save_model=True,**kwargs):
+    def sample_model(self,n_tune_steps=1200,n_draws=998,cheops_groups="all",save_model=True,**kwargs):
         """Sample model
 
         Args:
             n_tune_steps (int, optional): Number of steps during tuning. Defaults to 1200.
             n_draws (int, optional): Number of model draws per chain. Defaults to 998.
-            n_cores (int, optional): Number of cores. Defaults to 3.
-            n_chains (int, optional): Number of chains per core. Defaults to 2.
             save_model (bool, optional): Whether to save the full model to disk. Defaults to True.
         """
         self.update(**kwargs)
@@ -2537,7 +2539,7 @@ class chexo_model():
                     rvgroup+=[self.model_params['rv_trend']]
                 groups+=[rvgroup]
             self.trace = pm.sample(tune=n_tune_steps, draws=n_draws, 
-                                    chains=int(n_chains*n_cores), cores=n_cores, 
+                                    chains=self.n_cores, cores=self.n_cores, 
                                     start=self.init_soln, target_accept=0.8,
                                     return_inferencedata=True, 
                                     idata_kwargs=dict(log_likelihood=True), #Adding these for large model sizes
@@ -2554,7 +2556,7 @@ class chexo_model():
         if save_model:
             self.save_model_to_file()
 
-    def run_slim_ttv_model(self,n_tune_steps=1200,n_draws=998,n_cores=3,n_chains=2, **kwargs):
+    def run_slim_ttv_model(self,n_tune_steps=1200,n_draws=998,**kwargs):
         """Running a second model with extremely constrained in number of parameters in order to allow TTV modelling without large parameter correlations"""
         assert hasattr(self,'trace'), "Must have already sampled a classic model"
         assert self.spar_param in ['logg','Mstar','rhostar'], "Must be one of 'logg', 'Mstar', or 'rhostar'"
@@ -2730,7 +2732,7 @@ class chexo_model():
             self.ttv_init_soln = pmx.optimize(start=comb_soln)
             
             self.ttv_trace = pm.sample(tune=n_tune_steps, draws=n_draws, 
-                                    chains=int(n_chains*n_cores), cores=n_cores, 
+                                    chains=self.n_cores, cores=self.n_cores, 
                                     start=self.ttv_init_soln, target_accept=0.8, return_inferencedata=True)#**kwargs)
             self.save_trace_summary(trace=self.ttv_trace,suffix="_ttvfit",returndf=False)
         if not hasattr(self,'model_comp'):
