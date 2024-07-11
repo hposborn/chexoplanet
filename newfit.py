@@ -2071,7 +2071,8 @@ class chexo_model():
                 #self.model_params['gp_tess'].compute(self.lc_fit['time'].values, , quiet=True)
             else:
                 for scope in self.lcs:
-                    self.model_params[scope+'_logs']=pm.TruncatedNormal(scope+'_logs', mu=np.log(np.nanmedian(abs(np.diff(self.lc_fit[scope]['flux'].values))))+0.5, sigma=1,lower=-30,upper=5)
+                    logmad=np.log(np.nanmedian(abs(np.diff(self.lc_fit[scope]['flux'].values))))
+                    self.model_params[scope+'_logs']=pm.TruncatedNormal(scope+'_logs', mu=logmad+0.5, sigma=1,lower=-30,upper=5,initval=logmad+0.5)
             # -------------------------------------------
             #         Cheops detrending (linear)
             # -------------------------------------------
