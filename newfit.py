@@ -959,82 +959,79 @@ class chexo_model():
         if not hasattr(self,'lc_fit') or self.overwrite:
             self.lc_fit={scope:pd.DataFrame() for scope in self.lcs}
         for src in self.lcs:
-            if src=="cheops":
-                self.init_cheops()
+            self.lcs[src]['mask']=~np.isnan(self.lcs[src]['flux'].values)&~np.isnan(self.lcs[src]['flux_err'].values)
+            self.lcs[src]['mask'][self.lcs[src]['mask']]=cut_anom_diff(self.lcs[src]['flux'].values[self.lcs[src]['mask']])
+            self.lcs[src]['mask'][self.lcs[src]['mask']]=cut_anom_diff(self.lcs[src]['flux'].values[self.lcs[src]['mask']])
+            
+            self.lcs[src]['near_trans'] = np.tile(False,len(self.lcs[src]['mask']))
+            if hasattr(self,'planets'):
+                for pl in self.planets:
+                    self.lcs[src]['in_trans_'+pl]=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<(self.mask_distance*self.planets[pl]['tdur'])
+                    self.lcs[src]['near_trans']+=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.cut_distance*self.planets[pl]['tdur']
+                self.lcs[src]['in_trans_all'] = np.any(np.vstack([self.lcs[src]['in_trans_'+pl] for pl in self.planets]),axis=0)
             else:
-                self.lcs[src]['mask']=~np.isnan(self.lcs[src]['flux'].values)&~np.isnan(self.lcs[src]['flux_err'].values)
-                self.lcs[src]['mask'][self.lcs[src]['mask']]=cut_anom_diff(self.lcs[src]['flux'].values[self.lcs[src]['mask']])
-                self.lcs[src]['mask'][self.lcs[src]['mask']]=cut_anom_diff(self.lcs[src]['flux'].values[self.lcs[src]['mask']])
-                
-                self.lcs[src]['near_trans'] = np.tile(False,len(self.lcs[src]['mask']))
-                if hasattr(self,'planets'):
-                    for pl in self.planets:
-                        self.lcs[src]['in_trans_'+pl]=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<(self.mask_distance*self.planets[pl]['tdur'])
-                        self.lcs[src]['near_trans']+=abs((self.lcs[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.cut_distance*self.planets[pl]['tdur']
-                    self.lcs[src]['in_trans_all'] = np.any(np.vstack([self.lcs[src]['in_trans_'+pl] for pl in self.planets]),axis=0)
-                else:
-                    self.lcs[src]['in_trans_all'] = np.tile(False,len(self.lcs[src]['mask']))
-                #FLATTENING
-                if self.fit_flat:
-                    spline, newmask = kepler_spline(self.lcs[src]['time'].values[self.lcs[src]['mask']],
-                                                    self.lcs[src]['flux'].values[self.lcs[src]['mask']], 
-                                                    transit_mask=~self.lcs[src]['in_trans_all'][self.lcs[src]['mask']],bk_space=self.flat_knotdist)
-                    self.lcs[src]['spline']=np.tile(np.nan,len(self.lcs[src]['time']))
-                    self.lcs[src].loc[self.lcs[src]['mask'],'spline']=spline
-                    self.lcs[src]['flux_flat']=self.lcs[src]['flux'].values
-                    self.lcs[src]['flux_flat'][self.lcs[src]['mask']]-=self.lcs[src]['spline']
+                self.lcs[src]['in_trans_all'] = np.tile(False,len(self.lcs[src]['mask']))
+            #FLATTENING
+            if self.fit_flat:
+                spline, newmask = kepler_spline(self.lcs[src]['time'].values[self.lcs[src]['mask']],
+                                                self.lcs[src]['flux'].values[self.lcs[src]['mask']], 
+                                                transit_mask=~self.lcs[src]['in_trans_all'][self.lcs[src]['mask']],bk_space=self.flat_knotdist)
+                self.lcs[src]['spline']=np.tile(np.nan,len(self.lcs[src]['time']))
+                self.lcs[src].loc[self.lcs[src]['mask'],'spline']=spline
+                self.lcs[src]['flux_flat']=self.lcs[src]['flux'].values
+                self.lcs[src]['flux_flat'][self.lcs[src]['mask']]-=self.lcs[src]['spline']
 
 
-                #BINNING
-                ibinlc=bin_lc_segment(np.column_stack((self.lcs[src]['time'].values[self.lcs[src]['mask']],
-                                                        self.lcs[src]['flux'].values[self.lcs[src]['mask']],
+            #BINNING
+            ibinlc=bin_lc_segment(np.column_stack((self.lcs[src]['time'].values[self.lcs[src]['mask']],
+                                                    self.lcs[src]['flux'].values[self.lcs[src]['mask']],
+                                                    self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
+                                self.bin_size)
+            self.logger.debug("bin lc")
+            self.logger.debug(ibinlc)
+            bin_ix=~np.isnan(np.sum(ibinlc,axis=1))
+            self.binlc[src]=pd.DataFrame({'time':ibinlc[bin_ix,0],'flux':ibinlc[bin_ix,1],'flux_err':ibinlc[bin_ix,2]})
+            if self.fit_flat:
+                ibinlc2=bin_lc_segment(np.column_stack((self.lcs[src]['time'].values[self.lcs[src]['mask']],
+                                                        self.lcs[src]['flux_flat'].values[self.lcs[src]['mask']],
                                                         self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
-                                    self.bin_size)
-                self.logger.debug("bin lc")
-                self.logger.debug(ibinlc)
-                bin_ix=~np.isnan(np.sum(ibinlc,axis=1))
-                self.binlc[src]=pd.DataFrame({'time':ibinlc[bin_ix,0],'flux':ibinlc[bin_ix,1],'flux_err':ibinlc[bin_ix,2]})
-                if self.fit_flat:
-                    ibinlc2=bin_lc_segment(np.column_stack((self.lcs[src]['time'].values[self.lcs[src]['mask']],
-                                                            self.lcs[src]['flux_flat'].values[self.lcs[src]['mask']],
-                                                            self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
-                                            self.bin_size)
-                    self.binlc[src]['flux_flat']=ibinlc2[bin_ix,1]
-                    splinebin=bin_lc_segment(np.column_stack((self.lcs[src]['time'].values[self.lcs[src]['mask']],
-                                            self.lcs[src]['spline'].values[self.lcs[src]['mask']],
-                                            self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
-                                            self.bin_size)
-                    self.binlc[src]['spline']=splinebin[:,1]
-                self.binlc[src]['near_trans'] = np.tile(False,len(self.binlc[src]['time']))
-                if hasattr(self,'planets'):
-                    for pl in self.planets:
-                        self.binlc[src]['in_trans_'+pl]=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.mask_distance*self.planets[pl]['tdur']
-                        self.binlc[src]['near_trans']+=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.cut_distance*self.planets[pl]['tdur']
-                    self.binlc[src]['in_trans_all']=np.any(np.vstack([self.binlc[src]['in_trans_'+pl] for pl in self.planets]),axis=0)
-                else:
-                    self.binlc[src]['in_trans_all']=np.tile(False,len(self.binlc[src]['time']))
+                                        self.bin_size)
+                self.binlc[src]['flux_flat']=ibinlc2[bin_ix,1]
+                splinebin=bin_lc_segment(np.column_stack((self.lcs[src]['time'].values[self.lcs[src]['mask']],
+                                        self.lcs[src]['spline'].values[self.lcs[src]['mask']],
+                                        self.lcs[src]['flux_err'].values[self.lcs[src]['mask']])),
+                                        self.bin_size)
+                self.binlc[src]['spline']=splinebin[:,1]
+            self.binlc[src]['near_trans'] = np.tile(False,len(self.binlc[src]['time']))
+            if hasattr(self,'planets'):
+                for pl in self.planets:
+                    self.binlc[src]['in_trans_'+pl]=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.mask_distance*self.planets[pl]['tdur']
+                    self.binlc[src]['near_trans']+=abs((self.binlc[src]['time'].values-self.planets[pl]['tcen']-0.5*self.planets[pl]['period'])%self.planets[pl]['period']-0.5*self.planets[pl]['period'])<self.cut_distance*self.planets[pl]['tdur']
+                self.binlc[src]['in_trans_all']=np.any(np.vstack([self.binlc[src]['in_trans_'+pl] for pl in self.planets]),axis=0)
+            else:
+                self.binlc[src]['in_trans_all']=np.tile(False,len(self.binlc[src]['time']))
 
-                vals=['time','flux','flux_err','in_trans_all','near_trans']
-                if hasattr(self,'planets'):
-                    vals+=['in_trans_'+pl for pl in self.planets]
-                if self.fit_flat: vals+=['spline']
-                for val in vals:
-                    srcval='flux_flat' if val=='flux' and self.fit_flat else val
-                    if self.cut_oot:
-                        #Cutting far-from-transit values:
-                        self.lc_fit[src][val]=self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval]
-                        #newvals=self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval]
-                    elif self.bin_oot:
-                        #Merging the binned and raw timeseries so that near-transit data is raw and far-from-transit is binned:
-                        #newvals=np.hstack((self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval],self.binlc[src].loc[~self.binlc[src]['near_trans'],srcval]))
-                        self.lc_fit[src][val]=np.hstack((self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval],self.binlc[src].loc[~self.binlc[src]['near_trans'],srcval]))
-                    else:
-                        #newvals=self.lcs[src].loc[self.lcs[src]['mask'],srcval]
-                        self.lc_fit[src][val]=self.lcs[src].loc[self.lcs[src]['mask'],srcval]
-                # if srcval not in self.lc_fit.columns:
-                #     self.lc_fit[val]=newvals
-                # else:
-                #     self.lc_fit[val]=np.hstack((self.lc_fit[val],newvals))
+            vals=['time','flux','flux_err','in_trans_all','near_trans']
+            if hasattr(self,'planets'):
+                vals+=['in_trans_'+pl for pl in self.planets]
+            if self.fit_flat: vals+=['spline']
+            for val in vals:
+                srcval='flux_flat' if val=='flux' and self.fit_flat else val
+                if self.cut_oot:
+                    #Cutting far-from-transit values:
+                    self.lc_fit[src][val]=self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval]
+                    #newvals=self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval]
+                elif self.bin_oot:
+                    #Merging the binned and raw timeseries so that near-transit data is raw and far-from-transit is binned:
+                    #newvals=np.hstack((self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval],self.binlc[src].loc[~self.binlc[src]['near_trans'],srcval]))
+                    self.lc_fit[src][val]=np.hstack((self.lcs[src].loc[self.lcs[src]['mask']&self.lcs[src]['near_trans'],srcval],self.binlc[src].loc[~self.binlc[src]['near_trans'],srcval]))
+                else:
+                    #newvals=self.lcs[src].loc[self.lcs[src]['mask'],srcval]
+                    self.lc_fit[src][val]=self.lcs[src].loc[self.lcs[src]['mask'],srcval]
+            # if srcval not in self.lc_fit.columns:
+            #     self.lc_fit[val]=newvals
+            # else:
+            #     self.lc_fit[val]=np.hstack((self.lc_fit[val],newvals))
 
         #     #Adding source to the array:
         #     if 'src' not in self.lc_fit.columns:
@@ -1288,15 +1285,18 @@ class chexo_model():
         #self.logger.debug(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl"),os.path.exists(os.path.join(self.save_file_loc,self.name,self.unq_name+savefname+".pkl")),overwrite)
         if not overwrite and os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl")):
             self.cheops_init_trace[savefname[1:]]=pickle.load(open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"rb"))
-            self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+self.unq_name+savefname+".pkl")
+            self.logger.info("Exact match cheops pre-modelled trace exists for filekey="+fk+" at "+self.unq_name+savefname+".pkl")
             return savefname[1:]
         elif not overwrite and load_similar_past_model:
             pastfiles=glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"*"+savefname+".pkl"))
             if len(pastfiles)>0:
                 latest_file = max(pastfiles, key=os.path.getctime)
-                self.cheops_init_trace[savefname[1:]]=pickle.load(open(latest_file,"rb"))
-                self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+latest_file.split('/')[-1]+".pkl")
-                return savefname[1:]
+                try:
+                    self.cheops_init_trace[savefname[1:]]=pickle.load(open(latest_file,"rb"))
+                    self.logger.info("Near-match cheops pre-modelled trace exists for filekey="+fk+" at "+latest_file.split('/')[-1]+".pkl")
+                    return savefname[1:]
+                except:
+                    self.logger.warning("Loading Cheops pre-modelled trace for filekey="+fk+" at "+latest_file.split('/')[-1]+".pkl FAILS - likely due to being generated by a (now incompitible) previous version. Continuing with individual CHEOPS filekey fitting.")
         
         with pm.Model() as self.ichlc_models[fk]:
             #Adding planet model info if there's any transit in the lightcurve
@@ -1533,7 +1533,7 @@ class chexo_model():
             #self.logger.debug(all_quad_params)
             self.logger.debug([v for v in self.cheops_init_trace['cheops_only_fit_'+fk+'_trace_fixtrans'+['','_notrend'][int(force_no_dydt)]].posterior])
             for linpar in all_lin_params:
-                vals=np.column_stack([self.cheops_init_trace['cheops_only_fit_'+fk+'_trace_fixtrans'+['','_notrend'][int(force_no_dydt)]].posterior["dfd"+linpar] .values.ravel() for fk in self.cheops_filekeys])
+                vals=np.column_stack([self.cheops_init_trace['cheops_only_fit_'+fk+'_trace_fixtrans'+['','_notrend'][int(force_no_dydt)]].posterior["dfd"+linpar].values.ravel() for fk in self.cheops_filekeys])
                 dists=[]
                 # Let's make a comparison between each val/err and the combined other val/err params.
                 # Anomalies will be >x sigma seperate from the group mean, while others will be OK 
