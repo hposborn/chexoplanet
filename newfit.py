@@ -1200,7 +1200,7 @@ class chexo_model():
             quadpars (list of strings, optional): Specify the parameters to use for the quadratic decorrelation
         
         Returns:
-            PyMC3 trace: The output model trace from the fit.
+            pymc trace: The output model trace from the fit.
         """
         #Initialising save name (and then checking if we can re-load the saved model fit):
         savefname="_cheops_only_fit_"+fk+"_trace"
@@ -1293,8 +1293,9 @@ class chexo_model():
         elif not overwrite and load_similar_past_model:
             pastfiles=glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"*"+savefname+".pkl"))
             if len(pastfiles)>0:
-                self.cheops_init_trace[savefname[1:]]=pickle.load(open(pastfiles[0],"rb"))
-                self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+pastfiles[0].split('/')[-1]+".pkl")
+                latest_file = max(pastfiles, key=os.path.getctime)
+                self.cheops_init_trace[savefname[1:]]=pickle.load(open(latest_file,"rb"))
+                self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+latest_file.split('/')[-1]+".pkl")
                 return savefname[1:]
         
         with pm.Model() as self.ichlc_models[fk]:
@@ -1482,7 +1483,7 @@ class chexo_model():
         #Looping over all Cheops datasets and building individual models which we can then extract stats for each detrending parameter
         for fk in self.cheops_filekeys:
             self.logger.info("Performing Cheops-only minimisation with all detrending params for filekey "+fk)
-            #Launching a PyMC3 model
+            #Launching a pymc model
             tracename = self.cheops_only_model(fk, include_transit=self.planets!={}, force_no_dydt=force_no_dydt,**kwargs)
 
             var_names=[var for var in self.cheops_init_trace[tracename].posterior if '__' not in var and np.product(self.cheops_init_trace[tracename].posterior[var].shape)<6*np.product(self.cheops_init_trace[tracename].posterior['cheops_logs'].shape)]
@@ -2297,7 +2298,7 @@ class chexo_model():
                     #Adding the correlation model:
                     self.model_params['cheops_summodel_x'][fk] = pm.Deterministic("cheops_summodel_x_"+str(fk), pm.math.sum([self.model_params['cheops_planets_x'][pl][self.cheops_fk_mask[fk]] for pl in self.planets],axis=0) + self.model_params['cheops_flux_cor'][fk])
                     if self.fit_phi_gp and (self.phi_model_type=="individual" or len(self.cheops_filekeys)==1):
-                            self.model_params['gp_rollangle_model_phi'][fk] = pm.Deterministic("gp_rollangle_model_phi_"+str(fk), 
+                        self.model_params['gp_rollangle_model_phi'][fk] = pm.Deterministic("gp_rollangle_model_phi_"+str(fk), 
                                                                 self.model_params['gp_rollangles'][fk].predict((self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values[self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values] - \
                                                                                         self.model_params['cheops_summodel_x'][fk][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_phi_sorting'].values]), 
                                                                                     t=np.sort(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'phi'].values), return_var=False))
@@ -2318,25 +2319,29 @@ class chexo_model():
                 #      Evaluating log likelihoods            
                 # -------------------------------------------
                 for fk in self.cheops_filekeys:
-                    if self.fit_phi_gp and ((self.phi_model_type=="individual") or len(self.cheops_filekeys)==1):
-                        self.model_params['cheops_llk'][fk] = pm.Potential("cheops_llk_"+str(fk),gp.log_likelihood(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values - self.model_params['cheops_summodel_x'][fk]))
-                        #self.model_params['cheops_llk'][fk] = self.model_params['gp_rollangles'][fk].marginal("cheops_llk_"+str(fk),   observed = self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values - self.model_params['cheops_summodel_x'][fk])
-                        #print("w rollangle GP",fk)
-                        ##pm.math.printing.Print("llk_cheops")(self.model_params['llk_cheops'][fk])
-                    else:
-                        cheops_newsigmas[fk] = pm.math.sqrt(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux_err'].values ** 2 + pm.math.exp(self.model_params['cheops_logs'])**2)
-                        if self.fit_phi_spline:
-                            self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['spline_model'][fk], 
-                                                                            sigma=cheops_newsigmas[fk], observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
-                        elif self.fit_phi_gp and self.phi_model_type in ["common","split"] and len(self.cheops_filekeys)>1:
-                            self.model_params['cheops_llk'][fk] = pm.Potential("cheops_llk_"+fk, self.model_params['gp_rollangles'].log_likelihood(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values[self.cheops_fk_mask[fk],'mask_phi_sorting']-self.model_params['cheops_summodel_x'][fk][self.cheops_fk_mask[fk],'mask_phi_sorting']))
-                            #self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['gp_rollangle_model_phi'][fk][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting']], 
-                            #                                                sigma=pm.math.sqrt(cheops_newsigmas[fk]), observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
-                        elif not self.fit_phi_gp and not self.fit_phi_spline:
-                            #In the case of the common roll angle on binned phi, we cannot use the gp marginal, so we do an "old fashioned" likelihood:
-                            self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk], sigma=cheops_newsigmas[fk], 
-                                                                            observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
-                    
+                    # if self.fit_phi_gp and ((self.phi_model_type=="individual") or len(self.cheops_filekeys)==1):
+                    #     self.model_params['cheops_llk'][fk] = pm.Potential("cheops_llk_"+str(fk),self.model_params['gp_rollangles'][fk].log_likelihood(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values - self.model_params['cheops_summodel_x'][fk]))
+                    #     self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+str(fk),mu=self.model_params['gp_rollangle_model_phi'][fk],
+                    #                                                     sigma = cheops_newsigmas[fk],
+                    #                                                     observed = self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values - self.model_params['cheops_summodel_x'][fk]
+                    #                                                     self.model_params['gp_rollangles'][fk].log_likelihood())
+                    #     #self.model_params['cheops_llk'][fk] = self.model_params['gp_rollangles'][fk].marginal("cheops_llk_"+str(fk),   observed = self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values - self.model_params['cheops_summodel_x'][fk])
+                    #     #print("w rollangle GP",fk)
+                    #     ##pm.math.printing.Print("llk_cheops")(self.model_params['llk_cheops'][fk])
+                    #     #else:
+                    cheops_newsigmas[fk] = pm.math.sqrt(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux_err'].values ** 2 + pm.math.exp(self.model_params['cheops_logs'])**2)
+                    if self.fit_phi_spline:
+                        self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['spline_model'][fk], 
+                                                                        sigma=cheops_newsigmas[fk], observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
+                    elif self.fit_phi_gp and self.phi_model_type in ["common","split"] and len(self.cheops_filekeys)>1:
+                        self.model_params['cheops_llk'][fk] = pm.Potential("cheops_llk_"+fk, self.model_params['gp_rollangles'].log_likelihood(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values[self.cheops_fk_mask[fk],'mask_phi_sorting']-self.model_params['cheops_summodel_x'][fk][self.cheops_fk_mask[fk],'mask_phi_sorting']))
+                        #self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk] + self.model_params['gp_rollangle_model_phi'][fk][self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'mask_time_sorting']], 
+                        #                                                sigma=pm.math.sqrt(cheops_newsigmas[fk]), observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
+                    elif not self.fit_phi_gp and not self.fit_phi_spline:
+                        #In the case of the common roll angle on binned phi, we cannot use the gp marginal, so we do an "old fashioned" likelihood:
+                        self.model_params['cheops_llk'][fk] = pm.Normal("cheops_llk_"+fk, mu=self.model_params['cheops_summodel_x'][fk], sigma=cheops_newsigmas[fk], 
+                                                                        observed=self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)
+                
                         #print("no rollangle GP",fk)
                         ##pm.math.printing.Print("llk_cheops")(self.model_params['llk_cheops'][fk])
                         # self.model_params['llk_cheops'][fk] = pm.Potential("llk_cheops_"+str(fk), 
@@ -2355,14 +2360,14 @@ class chexo_model():
                     self.model_params[scope+'_model_x'][pl] = pm.Deterministic(scope+"_model_x_"+pl, xo.LimbDarkLightCurve(self.model_params['u_stars'][scope]).get_light_curve(orbit=self.model_params['orbit'][pl], r=self.model_params['rpl'][pl]/109.2,
                                                                                                                            t=self.lc_fit[scope]['time'].values)[:,0]*1000/self.model_params[scope+'_mult'])
                 self.model_params[scope+'_summodel_x'] = pm.Deterministic(scope+"_summodel_x", pm.math.sum([self.model_params[scope+'_model_x'][pl] for pl in self.planets],axis=0))
-                newsigmas[scope] = (self.lc_fit[scope]['flux_err'].values ** 2 + pm.math.exp(self.model_params[scope+'_logs'])**2)**(0.5)
+                newsigmas[scope] = pm.math.sqrt(self.lc_fit[scope]['flux_err'].values ** 2 + pm.math.exp(self.model_params[scope+'_logs'])**2)
                 if self.fit_gp and scope!="cheops":
                     self.model_params[scope+'_gp_model_x'] = pm.Deterministic(scope+"_gp_model_x", self.model_params[scope+'_gp'].predict(self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x'], t=self.lc_fit[scope]['time'].values, return_var=False))
-                    self.model_params[scope+'_llk'] = pm.Potential(scope+'_llk', self.model_params[scope+'_gp'].log_likelihood(self.lc_fit[scope]['flux'].values-self.model_params[scope+'_summodel_x']))
-                    #self.model_params[scope+'_llk'] = pm.Normal(scope+'_llk', 
-                    #                                            mu=self.model_params[scope+'_gp_model_x']+self.model_params[scope+'_summodel_x'],
-                    #                                            sigma=pm.math.sqrt(self.lc_fit[scope]['flux_err'].values**2 + pm.math.exp(self.model_params[scope+'_logs'])**2), 
-                    #                                            observed=self.lc_fit[scope]['flux'].values)
+                    #self.model_params[scope+'_llk'] = pm.Potential(scope+'_llk', self.model_params[scope+'_gp'].log_likelihood(self.lc_fit[scope]['flux'].values-self.model_params[scope+'_summodel_x']))
+                    self.model_params[scope+'_llk'] = pm.Normal(scope+'_llk', 
+                                                               mu=self.model_params[scope+'_gp_model_x']+self.model_params[scope+'_summodel_x'],
+                                                               sigma=newsigmas[scope],
+                                                               observed=self.lc_fit[scope]['flux'].values)
                     #self.model_params[scope+'_llk'] = self.model_params[scope+'_gp'].marginal(scope+'_llk', observed = self.lc_fit[scope]['flux'].values - self.model_params[scope+'_summodel_x'])
                 elif scope!="cheops":
                     
@@ -2754,7 +2759,7 @@ class chexo_model():
         self.model_comp["ttv"]['WAIC_pref_model']="ttvs" if self.model_comp["ttv"]['deltaWAIC']>0 else "no_ttvs"
         
     def save_trace_summary(self, trace=None, suffix="", returndf=True):
-        """Make a csv of the PyMC3 model """
+        """Make a csv of the pymc model """
         trace=self.trace if trace==None else trace
         assert not (suffix=="" and trace is None), "If you're using a non-standard trace, please include a distinct file suffix."
 
@@ -3349,7 +3354,7 @@ class chexo_model():
         print(settings)
 
     def save_trace(self):
-        """Save the PyMC3 trace to file with pickle. Save location default is \'NAME_mcmctrace.pk\'"""
+        """Save the pymc trace to file with pickle. Save location default is \'NAME_mcmctrace.pk\'"""
         if not os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"))):
             os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_")))
         pickle.dump(self.trace,open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_mcmctrace.pkl"),"wb"))
@@ -3478,7 +3483,7 @@ class chexo_model():
         Args:
             save (bool, optional): Save the figure? Defaults to True.
             savetype (str, optional): What suffix for the plot to be saved to? Defaults to 'png'.
-            input_trace (PyMC3 trace, optional): Specify a trace. Defaults to None, which uses the saved full initialised model trace.
+            input_trace (pymc trace, optional): Specify a trace. Defaults to None, which uses the saved full initialised model trace.
             fk (str, optional): Specify a Cheops filekey to plot, otherwise all available are plotted
             show_detrend (bool, optional): Whether to show both the pre-detrending flux and detrending model and the detrended transit+flux. Default is False
             transtype (str, optional): What type of transit prior was used. Must be one of 'set', 'loose', or 'none' (Defaults to 'set', i.e. constraining prior)
@@ -4696,11 +4701,11 @@ class chexo_model():
             descr+="For each {{\it CHEOPS}} visit we perform a fit using an \\texttt{exoplanet} transit model \citep{exoplanet:joss} informed by the expected transit ephemeris as well as using all available decorrelation vectors. "
             descr+="This includes linear and quadratic terms for the roll angle $\\Phi$, trigonometic functions of the roll angle $\\cos{\\Phi}$ and $\\sin{\\Phi}$, centroid positions $x$ \\& $y$, and estimation of background contamination, \\& smear done by the {\\it CHEOPS} data reduction pipeline), all of which are normalised to have $\\mu=0.0$ and $\\sigma=1.0$."
             if self.use_bayes_fact:
-                descr+="We then sampled this {{\it CHEOPS}}-only model using \\texttt{PyMC3} and calculated which detrending parameters improved the fit taking all parameters with a Bayes Factors less than "+str(np.round(self.signif_thresh,1))+". "
+                descr+="We then sampled this {{\it CHEOPS}}-only model using \\texttt{pymc} and calculated which detrending parameters improved the fit taking all parameters with a Bayes Factors less than "+str(np.round(self.signif_thresh,1))+". "
             elif self.use_signif:
-                descr+="We then sampled this {{\it CHEOPS}}-only model using \\texttt{PyMC3} and calculated which detrending parameters improved the fit taking all parameters with significant non-zero correlation coefficients (i.e. $>"+str(np.round(self.signif_thresh,1))+"\\sigma$ from 0). "
+                descr+="We then sampled this {{\it CHEOPS}}-only model using \\texttt{pymc} and calculated which detrending parameters improved the fit taking all parameters with significant non-zero correlation coefficients (i.e. $>"+str(np.round(self.signif_thresh,1))+"\\sigma$ from 0). "
             descr+="\nWe perform two models - one a comparison with and without a transit model to the {{\it CHEOPS}} data to assess the presence of a transit in the photometry, and a second including available TESS data in order to assess the improvement in radius and ephemeris precision."
-            descr+="Both models used \\texttt{PyMC3} and \\texttt{exoplanet} and included the TOI parameters (e.g. ephemeris) as priors. "
+            descr+="Both models used \\texttt{pymc} and \\texttt{exoplanet} and included the TOI parameters (e.g. ephemeris) as priors. "
             if self.fit_phi_gp:
                 descr+="We also included a \\texttt{celerite} Gaussian Process model \\citep{celerite} to fit variations in flux as a function of roll angle not removed by the decorrelations. "
             descr+="The resulting best-fit model for the {{\it CHEOPS}} data is shown in Figure \ref{fig:cheops}.\n\n"
