@@ -1033,7 +1033,8 @@ class chexo_model():
                 #     self.lc_fit[val]=newvals
                 # else:
                 #     self.lc_fit[val]=np.hstack((self.lc_fit[val],newvals))
-
+            else:
+                self.logger.warning("Run `init_cheops` in order to intialise the CHEOPS lightcurves")
             #     #Adding source to the array:
             #     if 'src' not in self.lc_fit.columns:
             #         self.lc_fit['src']=np.tile(src,len(newvals))
