@@ -1192,7 +1192,7 @@ class chexo_model():
             transittype (str, optional): How to include transit model - "set": set by TESS transits, "loose": allowed to vary, "none": no transit at all. Defaults to "fix".
             force_no_dydt (optional): Do we force the model to avoid using decorrelation with trends? Defaults to None, which mirrors include_transit
             overwrite (bool, optional): Whether to rewrite this initialise model. If not, it will try to reload a pre-run model. Defaults to False.
-            load_similar_past_model (bool, optional): Whether we take any similar past model save (ignoring precise date and parameters) instead of overwriting
+            load_similar_past_model (bool, optional): Whether we take any similar past model save (ignoring precise date and parameters) instead of overwriting every time. Default: true
             include_PIPE_PCs (bool, optional): Whether to include PIPE PCA of model residuals as decorrelation parameter 
             linpars (list of strings, optional): Specify the parameters to use for the linear decorrelation. For sin/cos, use cosNphi where N is the harmonic (i.e. normal = 1)
             split_spline_fit_vars (list, optional): The specific parameters which we can use a spline to split into high and low frequency variability
@@ -1291,8 +1291,9 @@ class chexo_model():
             self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+self.unq_name+savefname+".pkl")
             return savefname[1:]
         elif not overwrite and load_similar_past_model:
-            self.cheops_init_trace[savefname[1:]]=pickle.load(open(glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"*"+savefname+".pkl"),"rb"))
-            self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+self.unq_name+savefname+".pkl")
+            pastfile=glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"*"+savefname+".pkl"))[0]
+            self.cheops_init_trace[savefname[1:]]=pickle.load(open(pastfile,"rb"))
+            self.logger.warning("Cheops pre-modelled trace exists for filekey="+fk+" at "+pastfile.split('/')[-1]+".pkl")
             return savefname[1:]
         
         with pm.Model() as self.ichlc_models[fk]:
