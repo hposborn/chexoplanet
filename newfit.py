@@ -3416,9 +3416,9 @@ class chexo_model():
         #print({k:type(self.__dict__[k]) for k in self.__dict__})
         bytes_out = pickle.dump({k:self.__dict__[k] for k in self.__dict__ if type(self.__dict__[k]) not in [pm.Model,xo.orbits.KeplerianOrbit,az.data.inference_data.InferenceData] and k not in ['model_params']},open(savefile,'wb')) 
         #bytes_out = pickle.dumps(self)
-        with open(savefile, 'wb') as f_out:
-            for idx in range(0, len(bytes_out), max_bytes):
-                f_out.write(bytes_out[idx:idx+max_bytes])
+        #with open(savefile, 'wb') as f_out:
+        #    for idx in range(0, len(bytes_out), max_bytes):
+        #        f_out.write(bytes_out[idx:idx+max_bytes])
         self.trace.to_netcdf(savefile.replace("_model.pkl","_trace.nc"))
         del bytes_out
         #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
