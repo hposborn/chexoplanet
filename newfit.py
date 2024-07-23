@@ -16,7 +16,7 @@ from datetime import date
 import os
 import glob
 import time
-import arviz
+import arviz as az
 import seaborn as sns
 
 import warnings
@@ -1643,12 +1643,12 @@ class chexo_model():
             if np.any(self.lcs["cheops"][(self.lcs["cheops"]['filekey']==fk)&self.lcs["cheops"]['in_trans_all']]):
                 trace_w_trans_name = self.cheops_only_model(fk, transittype="loose", force_no_dydt=True, **kwargs)#, linpars=self.cheops_linear_decorrs[fk], quadpars=self.cheops_quad_decorrs[fk])
                 #trace_w_trans['log_likelihood']=trace_w_trans.out_llk_cheops
-                self.model_comp[fk]['tr_waic']  = arviz.waic(self.cheops_init_trace[trace_w_trans_name])
+                self.model_comp[fk]['tr_waic']  = az.waic(self.cheops_init_trace[trace_w_trans_name])
                 #notrans_linpars=self.cheops_linear_decorrs[fk]+['time','deltaT'] if 'deltaT' in self.lcs["cheops"].columns else self.cheops_linear_decorrs[fk]+['time']
                 #notrans_quadpars=self.cheops_quad_decorrs[fk]+['time','deltaT'] if 'deltaT' in self.lcs["cheops"].columns else self.cheops_quad_decorrs[fk]+['time']
                 trace_no_trans_name = self.cheops_only_model(fk, transittype="none", force_no_dydt=False, **kwargs)#,linpars=notrans_linpars,quadpars=notrans_quadpars)
                 #trace_no_trans['log_likelihood']=trace_no_trans.out_llk_cheops
-                self.model_comp[fk]['notr_waic'] = arviz.waic(self.cheops_init_trace[trace_no_trans_name])
+                self.model_comp[fk]['notr_waic'] = az.waic(self.cheops_init_trace[trace_no_trans_name])
                 self.model_comp[fk]['tr_loglik'] = np.max(self.cheops_init_trace[trace_w_trans_name].posterior['out_cheops_llk'])
                 self.model_comp[fk]['notr_loglik'] = np.max(self.cheops_init_trace[trace_no_trans_name].posterior['out_cheops_llk'])
                 self.model_comp[fk]['delta_loglik'] = (self.model_comp[fk]['tr_loglik'] - self.model_comp[fk]['notr_loglik'])
@@ -2755,8 +2755,8 @@ class chexo_model():
             self.save_trace_summary(trace=self.ttv_trace,suffix="_ttvfit",returndf=False)
         if not hasattr(self,'model_comp'):
             self.model_comp={'ttv':{}}
-        self.model_comp["ttv"]['wttv_waic']=arviz.waic(self.ttv_trace)
-        self.model_comp["ttv"]['no_ttv_waic']=arviz.waic(self.trace,var_name="log_likelihood")
+        self.model_comp["ttv"]['wttv_waic']=az.waic(self.ttv_trace)
+        self.model_comp["ttv"]['no_ttv_waic']=az.waic(self.trace,var_name="log_likelihood")
         self.model_comp["ttv"]['deltaWAIC']=self.model_comp["ttv"]['wttv_waic']['elpd_waic']-self.model_comp["ttv"]['no_ttv_waic']['elpd_waic']
         self.model_comp["ttv"]['WAIC_pref_model']="ttvs" if self.model_comp["ttv"]['deltaWAIC']>0 else "no_ttvs"
         
@@ -3375,7 +3375,7 @@ class chexo_model():
         for key in pick:
             setattr(self,key,pick[key])
         if os.path.exists(loadfile.replace("_model.pkl","_trace.nc")):
-            self.trace=arviz.from_netcdf(loadfile.replace("_model.pkl","_trace.nc"))
+            self.trace=az.from_netcdf(loadfile.replace("_model.pkl","_trace.nc"))
 
     def save_model_to_file(self, savefile=None, limit_size=True, suffix=None, remove_all_trace_timeseries=False):
         """Save a chexo_model object direct to file.
@@ -4062,7 +4062,7 @@ class chexo_model():
             elif type(input_trace)==dict:
                 new_p=input_trace['P_'+pl]
                 new_t0=input_trace['t0_'+pl]
-            elif type(input_trace)==arviz.InferenceData:
+            elif type(input_trace)==az.InferenceData:
                 new_p=input_trace.posterior['P_'+pl].values
                 new_t0=input_trace.posterior['t0_'+pl].values
             for n in range(self.planets[pl]['n_trans']):
@@ -4074,7 +4074,7 @@ class chexo_model():
                     exp_times[pl]=[new_t0+new_p*self.planets[pl]['init_transit_inds'][n]]
                     times[pl]=[input_trace['transit_times_'+pl+'_'+str(n)]]
                     ttvs[pl]=[1440*input_trace['transit_times_'+pl+'_'+str(n)] - (new_t0+new_p*self.planets[pl]['init_transit_inds'])]
-                elif type(input_trace)==arviz.InferenceData:
+                elif type(input_trace)==az.InferenceData:
                     exp_times[pl]=[new_t0+new_p*self.planets[pl]['init_transit_inds'][n]]
                     times[pl]=[input_trace.posterior['transit_times_'+pl+'_'+str(n)].values]
                     ttvs[pl]=[1440*input_trace.posterior['transit_times_'+pl+'_'+str(n)].values - (new_t0+new_p*self.planets[pl]['init_transit_inds'])]
