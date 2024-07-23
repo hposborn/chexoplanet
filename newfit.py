@@ -1040,7 +1040,7 @@ class chexo_model():
             #         self.lc_fit['src']=np.tile(src,len(newvals))
             #     else:
             #         self.lc_fit['src']=np.hstack((self.lc_fit['src'],np.tile(src,len(newvals))))
-                self.lc_fit[src]=self.lc_fit[src].sort_values('time')          
+            #    self.lc_fit[src]=self.lc_fit[src].sort_values('time')          
         # #Making an index array for the fit lightcurve according to source:
         # self.lc_fit_src_index=np.zeros((len(self.lc_fit),len(self.lcs)))
         # for isrc,src in self.lcs:
