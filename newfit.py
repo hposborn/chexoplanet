@@ -3414,7 +3414,7 @@ class chexo_model():
         n_bytes = 2**31
         max_bytes = 2**31-1
         #print({k:type(self.__dict__[k]) for k in self.__dict__})
-        bytes_out = pickle.dump({k:self.__dict__[k] for k in self.__dict__ if type(self.__dict__[k]) not in [pm.Model,xo.orbits.KeplerianOrbit,az.data.inference_data.InferenceData] and k not in ['model_params']}) 
+        bytes_out = pickle.dump({k:self.__dict__[k] for k in self.__dict__ if type(self.__dict__[k]) not in [pm.Model,xo.orbits.KeplerianOrbit,az.data.inference_data.InferenceData] and k not in ['model_params']},open(savefile,'wb')) 
         #bytes_out = pickle.dumps(self)
         with open(savefile, 'wb') as f_out:
             for idx in range(0, len(bytes_out), max_bytes):
