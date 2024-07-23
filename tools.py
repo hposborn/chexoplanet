@@ -152,48 +152,130 @@ def check_past_PIPE_params(folder):
     import os
     
     #Getting all filekey folders for a given object:
-    past_fks=glob.glob(os.path.join(folder,"PR??????_????????_V0?00"))
+    past_fks=glob.glob(os.path.join(folder,"PR*_*_V0?00"))
+    print(past_fks)
     past_fk_params={}
     allkeys={'im':[],'sa':[]}
     #Looping over all filekeys:
     for fk in past_fks:
         ifk=os.path.basename(os.path.normpath(fk))
         pipefold=os.path.join(folder,fk,"Outdata","00000")
-        
         if os.path.exists(os.path.join(pipefold,"logfile.txt")):
             past_fk_params[ifk]={'im':{},'sa':{}}
             #Opening the logfile for each:
-            
             with open(os.path.join(pipefold,"logfile.txt")) as flog:
                 #Searching for and saving lines with format: Fri Apr 19 13:20:48 2024 [4.45 min] k: 7, r: 25, bg: 1, d: 1, s: 1, mad=311.78 [im]
                 paramline=[line for line in flog if np.array(['k: ' in line, 'r: ' in line, 'bg: ' in line, 'd: ' in line, 's: ' in line]).sum()>3]
                 #Adding params to a dict. Spliting into "imagette" and "subarray"
-                for pl in paramline:
-                    if pl.replace(' ','')[-3:]=="[sa]":
-                        past_fk_params[ifk]['sa']={i.replace(' ','').split(':')[0]:i.replace(' ','').split(':')[1] for i in paramline[0].split(']')[1][:-3].split(',')}
-                        allkeys['sa']+=list(past_fk_params[ifk]['im'].keys())
-                    elif pl.replace(' ','')[-3:]=="[im]":
-                        past_fk_params[ifk]['im']={i.replace(' ','').split(':')[0]:i.replace(' ','').split(':')[1] for i in paramline[0].split(']')[1][:-3].split(',')}
-                        allkeys['im']+=list(past_fk_params[ifk]['im'].keys())
+                for niter, pl in enumerate(paramline):
+                    #This natively overwrites the previous iteration...
+                    strip_pl=pl.replace(' ','').replace('\n','').replace('mad=','mad:')
+                    #print(strip_pl,strip_pl.split(']')[1][:-4].split(','))
+                    #Wed Jul 17 21:12:47 2024 [50.42 min] k: 2, r: 40, bg: 1, d: 0, s: 1, mad=1122.07 [sa]
+                    if strip_pl[-4:]=="[sa]":
+                        parse_dict={i.split(':')[0]:i.split(':')[1] for i in strip_pl[strip_pl.find('k:'):-4].split(',')}
+                        parse_dict.update({'niter':niter,'filekey':ifk})
+                        past_fk_params[ifk]['sa'][niter]=parse_dict
+                        print(strip_pl,parse_dict)
+                        allkeys['sa']+=list(parse_dict.keys())
+                    elif strip_pl[-4:]=="[im]":
+                        parse_dict={i.split(':')[0]:i.split(':')[1] for i in strip_pl[strip_pl.find('k:'):-4].split(',')}
+                        parse_dict.update({'niter':niter,'filekey':ifk})
+                        past_fk_params[ifk]['im'][niter]=parse_dict
+                        allkeys['im']+=list(parse_dict.keys())
+        if past_fk_params[ifk]['sa']!={}:
+            past_fk_params[ifk]['sa']=pd.DataFrame(past_fk_params[ifk]['sa']).T
+            for col in past_fk_params[ifk]['sa'].columns:
+                if col!='filekey':
+                    past_fk_params[ifk]['sa'][col]=pd.to_numeric(past_fk_params[ifk]['sa'][col])
+            past_fk_params[ifk]['sa']=past_fk_params[ifk]['sa'].sort_values('mad')
+            sa_params=pd.concat([past_fk_params[ifk]['sa'] for ifk in past_fk_params])
+            #Creating mad normalised to best MAD for a given filekey:
+            # sa_params['norm_mad']=sa_params['mad']
+            # for ifk in past_fk_params:
+            #     sa_params.loc[sa_params['filekey']==ifk,'norm_mad']=sa_params.loc[sa_params['filekey']==ifk,'mad']/np.nanmin(sa_params.loc[sa_params['filekey']==ifk,'mad'])
+        else:
+             past_fk_params[ifk]['sa']=None
+        if past_fk_params[ifk]['im']!={}:
+            past_fk_params[ifk]['im']=pd.DataFrame(past_fk_params[ifk]['im']).T
+            for col in past_fk_params[ifk]['im'].columns:
+                if col!='filekey':
+                    past_fk_params[ifk]['im'][col]=pd.to_numeric(past_fk_params[ifk]['im'][col])
+            past_fk_params[ifk]['im']=past_fk_params[ifk]['im'].sort_values(['mad','niter'],ascending=[True,False])
+            im_params=pd.concat([past_fk_params[ifk]['im'] for ifk in past_fk_params])
+            #Creating mad normalised to best MAD for a given filekey:
+            # im_params['norm_mad']=im_params['mad']
+            # for ifk in past_fk_params:
+            #     im_params.loc[im_params['filekey']==ifk,'norm_mad']=im_params.loc[im_params['filekey']==ifk,'mad']/np.nanmin(im_params.loc[im_params['filekey']==ifk,'mad'])
+        else:
+            past_fk_params[ifk]['im']=None
     
-    #Now we need to pick the most common optimisation approach
+    #Now we need to pick the most common/best optimisation approach
     pkey_modes={'im':{},'sa':{}}
     
-    if np.sum([len(past_fk_params[fk]['sa']) for fk in past_fk_params])>0:
+    print(past_fk_params)
+    if np.sum([past_fk_params[fk]['sa'] is not None for fk in past_fk_params])>0:
         pkey_modes['sa']['exists']=True
-        for pkey in np.unique(allkeys['sa']):
-            all_pars=[past_fk_params[fk]['sa'][pkey] for fk in past_fk_params if pkey in past_fk_params[fk]['sa']]
-            pkey_modes['sa'][pkey]=max(set(all_pars), key=all_pars.count)
+        #Simply taking the parameters for the minimum MAD found across all filekeys:
+        for col in ['k', 'r', 'bg', 'd', 's']:
+            pkey_modes['sa'][col]=sa_params.iloc[np.argmin(sa_params['mad'].values)][col]
     else:
         pkey_modes['sa']['exists']=False
-    
-    if np.sum([len(past_fk_params[fk]['im']) for fk in past_fk_params])>0:
+
+    if np.sum([past_fk_params[fk]['im'] is not None for fk in past_fk_params])>0:
         pkey_modes['im']['exists']=True
-        for pkey in np.unique(allkeys['im']):
-            all_pars=[past_fk_params[fk]['im'][pkey] for fk in past_fk_params if pkey in past_fk_params[fk]['im']]
-            pkey_modes['im'][pkey]=max(set(all_pars), key=all_pars.count)
+        #Simply taking the parameters for the minimum MAD found across all filekeys:
+        for col in ['k', 'r', 'bg', 'd', 's']:
+            pkey_modes['im'][col]=im_params.iloc[np.argmin(im_params['mad'].values)][col]
     else:
         pkey_modes['im']['exists']=False
+
+        # #Step1 find unique values for each of the 5 key parameters across all filekeys (k, r, bg, d, s)
+        # unique_vals={}
+        # mad_trends={}
+        # for col in ['k', 'r', 'bg', 'd', 's']:
+        #     unique_vals[col]=np.unique([np.unique(past_fk_params[fk]['sa'][col].values) for fk in past_fk_params])
+        #     #Finding the  mad vs this parameter
+        #     mad_trends[col]=scipy.stats.linregree(sa_params.loc[col],sa_params.loc['norm_mad'])
+        # sorted_by_rv=list(mad_trends.leys())[np.argsort([mad_trends[col].rvalue for col in mad_trends])]
+
+        # ikeys, ivalues = zip(*unique_vals.items())
+
+        ##### THIS DOESNT WORK BECAUSE THERE ARE NO PERMUTATIONS IN COMMON BETWEEN PIPE RUNS #####
+        # import itertools
+        # permutations_dicts = [dict(zip(ikeys, v)) for v in itertools.product(*ivalues)]
+        # mads={} #Storing median absolute deviations
+        # for n_permute,i_permute in enumerate(permutations_dicts):
+        #     ixs={fk:np.column_stack([past_fk_params[fk]['sa'][i_key].values==i_permute[i_key] for i_key in i_permute]) for fk in past_fk_params}
+        #     print(ixs)
+        #     ix_vals=list(ixs.values())
+        #     print(i_permute,np.sum(ix_vals))
+        #     if np.all(ix_vals):
+        #         #All filekeys have this permutation. Checking the minimum
+        #         mads[n_permute]=np.nanmedian([np.min(past_fk_params[fk]['sa'].loc[ixs[fk],'mad']) for fk in past_fk_params])
+        #     elif np.sum(ix_vals)>2 and np.sum(~ix_vals)<2:
+        #         #Most of the optimisations have this permutation - checking anyway
+        #         mads[n_permute]=np.nanmedian([np.min(past_fk_params[fk]['sa'].loc[ixs[fk],'mad']) for fk in past_fk_params if np.sum(ixs[fk])>0])
+        # #Now taking the lowest average MAD to be the "default" PIPE optimisation:
+        # min_mad = min(mads.values())
+        # pkey_modes['sa'] = permutations_dicts[[k for k in mads if mads[k] == min_mad][0]]
+
+        ##### NEW TECHNIQUE: FIND MOST CLEARLY USEFUL PARAMETER UNIVERSALLY
+
+        # print(allkeys['sa'])
+        # for pkey in np.unique(allkeys['sa']):
+        #     all_pars=[past_fk_params[fk]['sa'][pkey] for fk in past_fk_params if pkey in past_fk_params[fk]['sa']]
+        #     pkey_modes['sa'][pkey]=max(set(all_pars), key=all_pars.count)
+    # else:
+    #     pkey_modes['sa']['exists']=False
+    
+    # if np.sum([len(past_fk_params[fk]['im']) for fk in past_fk_params])>0:
+    #     pkey_modes['im']['exists']=True
+    #     for pkey in np.unique(allkeys['im']):
+    #         all_pars=[past_fk_params[fk]['im'][pkey] for fk in past_fk_params if pkey in past_fk_params[fk]['im']]
+    #         pkey_modes['im'][pkey]=max(set(all_pars), key=all_pars.count)
+    # else:
+    #     pkey_modes['im']['exists']=False
     
     return pkey_modes
 
