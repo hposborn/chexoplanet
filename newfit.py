@@ -882,7 +882,7 @@ class chexo_model():
                             period=float(row[1]['Period (days)']),
                             period_err=float(row[1]['Period (days) err']),**kwargs)
             
-    def add_planet(self, name, tcen, period, tdur, depth, tcen_err=None, period_err=None, b=None, 
+    def add_planet(self, name, tcen, period, depth, tdur=None, tcen_err=None, period_err=None, b=None, 
                    rprs=None, K=None, overwrite=False,check_per=False,force_check_per=False,**kwargs):
         """Add planet to the model
 
@@ -890,8 +890,8 @@ class chexo_model():
             name (str): Name associated with planet (e.g. b or c)
             tcen (float): transit epoch in same units as time array (i.e. TJD)
             period (float): transit period in same units as time array (i.e. days)
-            tdur (float): transit duration in days
             depth (float): transit depth as ratio
+            tdur (float): transit duration in days (optional - one of b or tdur must be used)
             tcen_err (float,optional): transit epoch error (optional)
             period_err (float,optional): transit period error in same units as time array (i.e. days)
             b (float,optional): impact parameter
@@ -901,7 +901,8 @@ class chexo_model():
             force_check_per (bool, optional): Insist that we run TLS to check, using lightcurve data, if period can be improved.
         """
         assert name not in self.planets or overwrite, "Name is already stored as a planet"
-        
+        assert not (tdur is None)&(b is None), "Must define either tdur or b"
+
         if period_err is None:
             if 'tess' in self.lcs:
                 span=np.ptp(self.lcs['tess']['time']) 
@@ -921,7 +922,10 @@ class chexo_model():
             b=np.clip((1+rprs)**2 - (tdur*86400)**2 * \
                                 ((3*period*86400) / (np.pi**2*6.67e-11*rho_S*1410))**(-2/3),
                                 0.01,2.0)**0.5
-        
+        elif tdur is None:
+            rho_S=self.rhostar[0] if hasattr(self,'rhostar') else 1.0
+            tdur = np.sqrt(((1+rprs)**2 - b**2)*((3*period*86400) / (np.pi**2*6.67e-11*rho_S*1410))**(2/3))/86400
+
         if hasattr(self,'monotools_lc') and check_per:
             ntrans=np.round((np.nanmedian(np.max(self.monotools_lc.time))-tcen)/period)
             if (tcen+period_err*ntrans)>tdur*0.666 or force_check_per:
