@@ -160,8 +160,8 @@ def check_past_PIPE_params(folder):
     for fk in past_fks:
         ifk=os.path.basename(os.path.normpath(fk))
         pipefold=os.path.join(folder,fk,"Outdata","00000")
+        past_fk_params[ifk]={'im':{},'sa':{}}
         if os.path.exists(os.path.join(pipefold,"logfile.txt")):
-            past_fk_params[ifk]={'im':{},'sa':{}}
             #Opening the logfile for each:
             with open(os.path.join(pipefold,"logfile.txt")) as flog:
                 #Searching for and saving lines with format: Fri Apr 19 13:20:48 2024 [4.45 min] k: 7, r: 25, bg: 1, d: 1, s: 1, mad=311.78 [im]
