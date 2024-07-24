@@ -4715,28 +4715,37 @@ class chexo_model():
                             for iimodname in model_fit_descs:
                                 if iimodname in col:
                                     alltabs[mod].get_column(col).description=model_fit_descs[iimodname]+"; "+region_info[reg]
+        
+        alltabs["posteriors"] = tablemaker.addTable(Table.from_pandas(self.trace_summary), name="posteriors", description="Parameter posterior mean values, errors, statistics, etc")
+        summary_descs = {'mean':"Mean",'sd':'Standard deviation',
+                         'hdi_3%':'Lower (3%) highest density interval','hdi_97%':'Upper (3%) highest density interval',
+                         'mcse_mean':'Monte Carlo standard error of mean','mcse_sd':'Monte Carlo standard error of SD',
+                         'ess_bulk':'Estimated sample size; bulk','ess_tail':'Estimated sample size; tails'
+                         'r_hat':'Gelman-Rubin statistic','5%':'5th percentile','-$1\sigma$':'-1 sigma',
+                         'median':'Median','+$1\sigma$':'+1 Sigma','95%':'95th percentile'}
 
-            df = self.make_timeser
+        for col in self.trace_summary.columns:
+            alltabs[mod].get_column(col).description=summary_descs[col]
 
-            if extra_tables is not None:
-                assert extra_descs is not None, "Must also include column description dictionaries for each extra table in the form {'xtab1':{'tab':'whole table descr','cols':{'col1':'this desc','col2':this desc'}}}"
-                for tab in extra_tables:
-                    alltabs[tab] = tablemaker.addTable(Table.from_pandas(extra_tables[tab]), name=mod.lower(), description=extra_descs[tab]['tab'])
-                    for col in extra_tables[tab].columns:
-                        alltabs[tab].get_column(col).description = extra_descs[tab]['cols'][col]
+        if extra_tables is not None:
+            assert extra_descs is not None, "Must also include column description dictionaries for each extra table in the form {'xtab1':{'tab':'whole table descr','cols':{'col1':'this desc','col2':this desc'}}}"
+            for tab in extra_tables:
+                alltabs[tab] = tablemaker.addTable(Table.from_pandas(extra_tables[tab]), name=mod.lower(), description=extra_descs[tab]['tab'])
+                for col in extra_tables[tab].columns:
+                    alltabs[tab].get_column(col).description = extra_descs[tab]['cols'][col]
 
-            # Customize ReadMe output
-            tablemaker.title = papertitle
-            tablemaker.author = paperauthor
-            tablemaker.date = Time.now().split("T")[0]
-            tablemaker.abstract = paperabstract
-            tablemaker.makeReadMe()
-            os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload"))
-            for table in tablemaker.__tables:
-                table.makeCDSTable(fd=open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload",table.name), "w"))
-            
-            with open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload","CDS_upload_ReadMe.txt"), "w") as fd:
-                tablemaker.makeReadMe(out=fd)
+        # Customize ReadMe output
+        tablemaker.title = papertitle
+        tablemaker.author = paperauthor
+        tablemaker.date = Time.now().split("T")[0]
+        tablemaker.abstract = paperabstract
+        tablemaker.makeReadMe()
+        os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload"))
+        for table in tablemaker.__tables:
+            table.makeCDSTable(fd=open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload",table.name), "w"))
+        
+        with open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload","CDS_upload_ReadMe.txt"), "w") as fd:
+            tablemaker.makeReadMe(out=fd)
             
 
     def plot_corner(self):
