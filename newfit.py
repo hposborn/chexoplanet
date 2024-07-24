@@ -10,6 +10,7 @@ from astropy.time import Time
 from astropy.table import Table
 from astropy.coordinates import SkyCoord, get_body
 
+import cloudpickle
 import pickle
 import os.path
 from datetime import date
@@ -1411,7 +1412,7 @@ class chexo_model():
             #self.logger.debug(mod.)
             self.cheops_init_trace[savefname[1:]]= pm.sample(tune=300, draws=400, chains=self.n_cores, cores=self.n_cores, start=comb_soln, return_inferencedata=True)
 
-            pickle.dump(self.cheops_init_trace[savefname[1:]],open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"wb"))
+            cloudpickle.dump(self.cheops_init_trace[savefname[1:]],open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"wb"))
         return savefname[1:]
 
     def init_cheops(self, force_no_dydt=False, make_detren_params_global=True, force_detrend_pars={}, **kwargs):
@@ -3363,7 +3364,7 @@ class chexo_model():
         """Save the pymc trace to file with pickle. Save location default is \'NAME_mcmctrace.pk\'"""
         if not os.path.exists(os.path.join(self.save_file_loc,self.name.replace(" ","_"))):
             os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_")))
-        pickle.dump(self.trace,open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_mcmctrace.pkl"),"wb"))
+        cloudpickle.dump(self.trace,open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_mcmctrace.pkl"),"wb"))
 
     def load_model_from_file(self, loadfile):
         """Load a chexo_model object direct from file.
@@ -3418,14 +3419,14 @@ class chexo_model():
         n_bytes = 2**31
         max_bytes = 2**31-1
         #print({k:type(self.__dict__[k]) for k in self.__dict__})
-        bytes_out = pickle.dump({k:self.__dict__[k] for k in self.__dict__ if type(self.__dict__[k]) not in [pm.Model,xo.orbits.KeplerianOrbit,az.data.inference_data.InferenceData] and k not in ['model_params']},open(savefile,'wb')) 
-        #bytes_out = pickle.dumps(self)
+        bytes_out = cloudpickle.dump({k:self.__dict__[k] for k in self.__dict__ if type(self.__dict__[k]) not in [pm.Model,xo.orbits.KeplerianOrbit,az.data.inference_data.InferenceData] and k not in ['model_params']},open(savefile,'wb')) 
+        #bytes_out = cloudpickle.dump(self)
         #with open(savefile, 'wb') as f_out:
         #    for idx in range(0, len(bytes_out), max_bytes):
         #        f_out.write(bytes_out[idx:idx+max_bytes])
         self.trace.to_netcdf(savefile.replace("_model.pkl","_trace.nc"))
         del bytes_out
-        #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
+        #pick=cloudpickle.dump(self.__dict__,open(loadfile,'wb'))
     
     def plot_all(self,**kwargs):
         if not hasattr(self,"models_out") or "cheops" not in self.models_out or (hasattr(self,'trace') and "cheops_lindetrend_+1sig" not in self.models_out["cheops"]):
