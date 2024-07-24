@@ -4361,7 +4361,7 @@ class chexo_model():
             else:
                 plt.gca().set_xticklabels([])
             self.logger.debug([transmin,std])
-            if yoffsets is None and ylim is None
+            if yoffsets is None and ylim is None:
                 plt.ylim(transmin-5*std,yoffset-abs(transmin))
             elif ylim is not None:
                 plt.ylim(ylim)
@@ -4656,6 +4656,88 @@ class chexo_model():
                 plandatfile.write(outstr+"\n")
         #for mod in self.models_out:
         #    self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+mod+"_timeseries.csv"))
+
+    def output_cds_table(self, papertitle, paperauthor, paperabstract, extra_tables=None, extra_descs=None):
+        """
+        Create a CDS FWF table and ReadMe for upload using `cdspyreadme`.
+
+        Args:
+            extra_tables (dict, optional) - dictionary of pandas DataFrames
+            extra_descs (dict, optional) - dictionary of tab and column descriptions matching the extra_tables index"""
+        
+        tablemaker = cdspyreadme.CDSTablesMaker()
+        alltabs={}
+        tabdescs={'k2':"K2 photometry and model fits for "+self.name,'cheops':"CHEOPS photometry and model fits for "+self.name,
+                  'tess':"TESS photometry and model fits for "+self.name,'rv':"Combined radial velocities for "+self.name}
+        
+        region_info={"+2sig":"+2 sigma", "+1sig":"+1 sigma", "med":"Median", "-1sig":"-1 sigma", "-2sig":"-2 sigma"}
+        lc_descs={'time':'BJD time','flux':'Normalised flux [ppt]','flux_err':'Normalised flux err [ppt]','mask':'Boolean flux mask',
+                  'raw_flux':'Raw flux [elec]','raw_flux_err':'Raw flux err [elec]','phi':'Roll angle [deg]','bg':'Background [elec]',
+                  'centroidx':'PSF X centroid [pix]','centroidy':'PSF Y centroid [pix]','deltaT':'Temperature change [mK]',
+                  'xoff':'PSF X centroid offset [pix]','yoff':'PSF X centroid offset [pix]','filekey':'CHEOPS file key',
+                  'n_phi_model':'Index for rollangle model','raw_flux_medium_offset':'Intravisit median offset',
+                  'raw_flux_medium_offset_centroidcorr':'Jump-corrected intravisit offset','phi_digi':'index for rollangle bin',
+                  "in_trans":"All planet in-transit mask","near_trans":"All planet near-transit mask","near_trans_all":"All planet near-transit mask",
+                  "spline":"transit-masked flux bspline","flux_flat":"spline-flattened flux",
+                  "in_trans_all":"All planet in-transit mask","mask_allphi_sorting":"rollangle -> time sort index", 
+                  "mask_alltime_sorting":"time -> rollangle sort index"}
+        for col in ['bg','deltaT']:
+            lc_descs.update({col+"fast":lc_descs[col]+"; high-freq component",col+"slow":lc_descs[col]+"; low-freq component"})
+        for pl in self.planets:
+            lc_descs.update({"in_trans_"+pl:"planet "+pl+" in-transit mask"})
+        rv_descs={'Time':'BJD time', "RV_ms":"RV mean [m/s]", "eRV_ms":"RV uncertainty [m/s]"}
+        for mod in self.models_out:
+            alltabs[mod] = tablemaker.addTable(Table.from_pandas(self.models_out[mod]), name=mod.lower(), description=tabdescs[mod])
+            model_fit_descs={mod+"_gpmodel_":"GP detrend model",
+                             mod+"_pred_spline_":"Spline detrend model",
+                             mod+"_lindetrend_":"Decorrelation detrend model",
+                             mod+"_alldetrend_":"Sum of detrend models",
+                             mod+"_allplmodel_":"Sum of planet models"}
+            model_fit_descs.update({mod+"_["+pl+"]model_":"planet "+pl+" model" for pl in self.planets})
+            rvmodel_fit_descs={"bkg_":"RV background model",
+                               'model_':"Sum of all RV models"}
+            rvmodel_fit_descs.update({"rv_"+pl+"_":"planet "+pl+" RV model" for pl in self.planets})
+
+            for col in self.models_out[mod].columns:
+                if mod!="rvs" and  col in lc_descs:
+                    alltabs[mod].get_column(col).description=lc_descs[col]
+                elif mod=="rvs" and col in rv_descs:
+                    alltabs[mod].get_column(col).description=rv_descs[col]
+                elif mod=="rvs":
+                    for reg in region_info:
+                        if "["+reg+"]" in col:
+                            for iimodname in rvmodel_fit_descs:
+                                if iimodname in col:
+                                    alltabs[mod].get_column(col).description=rvmodel_fit_descs[iimodname]+"; "+region_info[reg]
+                else:
+                    for reg in region_info:
+                        if "["+reg+"]" in col:
+                            for iimodname in model_fit_descs:
+                                if iimodname in col:
+                                    alltabs[mod].get_column(col).description=model_fit_descs[iimodname]+"; "+region_info[reg]
+
+            df = self.make_timeser
+
+            if extra_tables is not None:
+                assert extra_descs is not None, "Must also include column description dictionaries for each extra table in the form {'xtab1':{'tab':'whole table descr','cols':{'col1':'this desc','col2':this desc'}}}"
+                for tab in extra_tables:
+                    alltabs[tab] = tablemaker.addTable(Table.from_pandas(extra_tables[tab]), name=mod.lower(), description=extra_descs[tab]['tab'])
+                    for col in extra_tables[tab].columns:
+                        alltabs[tab].get_column(col).description = extra_descs[tab]['cols'][col]
+
+            # Customize ReadMe output
+            tablemaker.title = papertitle
+            tablemaker.author = paperauthor
+            tablemaker.date = Time.now().split("T")[0]
+            tablemaker.abstract = paperabstract
+            tablemaker.makeReadMe()
+            os.mkdir(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload"))
+            for table in tablemaker.__tables:
+                table.makeCDSTable(fd=open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload",table.name), "w"))
+            
+            with open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_cds_upload","CDS_upload_ReadMe.txt"), "w") as fd:
+                tablemaker.makeReadMe(out=fd)
+            
 
     def plot_corner(self):
         """
