@@ -1521,8 +1521,8 @@ class chexo_model():
             fk_bool=np.array([int(i==fk) for i in self.cheops_filekeys])
             if self.use_bayes_fact:
                 #Bayes factor is <1sigma = significant trend = use this in the decorrelation
-                self.cheops_linear_decorrs.update({"dfd"+par+"_"+"".join(list(fk_bool.astype(str))):[par,[fk]] for par in self.init_cheops_linear_decorr_pars if self.linear_assess[fk][par]<1})
-                self.cheops_quad_decorrs.update({"d2fd"+par+"2_"+"".join(list(fk_bool.astype(str))):[par,[fk]] for par in self.init_cheops_quad_decorr_pars if self.quad_assess[fk][par]<1})
+                self.cheops_linear_decorrs.update({"dfd"+par+"_"+"".join(list(fk_bool.astype(str))):[par,[fk]] for par in self.init_cheops_linear_decorr_pars if self.linear_assess[fk][par]<1 or par in force_detrend_pars['lin']})
+                self.cheops_quad_decorrs.update({"d2fd"+par+"2_"+"".join(list(fk_bool.astype(str))):[par,[fk]] for par in self.init_cheops_quad_decorr_pars if self.quad_assess[fk][par]<1 or par in force_detrend_pars['quad']})
             elif self.use_signif:
                 #detrend mean is >1sigma = significant trend = use this in the decorrelation
                 self.cheops_linear_decorrs.update({"dfd"+par+"_"+"".join(list(fk_bool.astype(str))):[par,[fk]] for par in self.init_cheops_linear_decorr_pars if self.linear_assess[fk][par]>self.signif_thresh or par in force_detrend_pars['lin']})
@@ -4231,8 +4231,9 @@ class chexo_model():
             save_suffix="" if save_suffix is None else save_suffix
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_ttvs"+save_suffix+"."+savetype))
 
-    def plot_transits_fold(self,save=True,savetype='png',xlim=None,show_legend=True,sigma_fill=2,yoffsets=None,overwrite=False,save_suffix=None,**kwargs):
-
+    def plot_transits_fold(self,save=True,savetype='png',xlim=None,ylim=None,
+                           show_legend=True,sigma_fill=2,yoffsets=None,overwrite=False,save_suffix=None,**kwargs):
+        
         if not hasattr(self,"models_out") or overwrite:
             self.make_timeseries(overwrite=overwrite,**kwargs)
 
@@ -4290,11 +4291,17 @@ class chexo_model():
                                         alpha=0.15,zorder=4,color='C'+str(4+2*npl))
                     plt.plot(np.sort(phase),yoffset+self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"].values[np.argsort(phase)],':',
                                 alpha=0.66,zorder=5,color='C'+str(5+2*npl),linewidth=2.5)
-                    std=np.nanmedian(abs(np.diff(plflux-self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"])))
+                    binresidlc=bin_lc_segment(np.column_stack((np.sort(phase), (plflux-self.models_out[scope].loc[ix,scope+"_"+pl+"model_med"]).values[np.argsort(phase)],
+                                                            self.models_out[scope].loc[ix,'flux_err'].values[np.argsort(phase)])),self.planets[pl]['tdur']/8)
+                    std=np.nanmedian(abs(np.diff(binresidlc[:,1])))
                 else:
                     #No detected transit, but we can use the derived depth/other flux STD to get us nice sized "hole"
                     transmin=dep
-                    std=np.nanmedian(abs(np.diff(self.models_out[scope].loc[:,'flux'].values-self.models_out[scope].loc[:,scope+"_alldetrend_med"].values)))
+                    #std=np.nanmedian(abs(np.diff(self.models_out[scope].loc[:,'flux'].values-self.models_out[scope].loc[:,scope+"_alldetrend_med"].values)))
+                    binresidlc=bin_lc_segment(np.column_stack((np.sort(phase), (self.models_out[scope].loc[:,'flux'].values-self.models_out[scope].loc[:,scope+"_alldetrend_med"].values)[np.argsort(phase)],
+                                                            self.models_out[scope].loc[:,'flux_err'].values[np.argsort(phase)])),self.planets[pl]['tdur']/8)
+                    std=np.nanmedian(abs(np.diff(binresidlc[:,1])))
+
                 if yoffsets is None:
                     yoffset+= abs(transmin) + 3*std
                 else:
@@ -4354,10 +4361,12 @@ class chexo_model():
             else:
                 plt.gca().set_xticklabels([])
             self.logger.debug([transmin,std])
-            if yoffsets is None:
-                plt.ylim(transmin-3*std,yoffset-abs(transmin))
-            else:
-                plt.ylim(transmin-3*std,yoffset)
+            if yoffsets is None and ylim is None
+                plt.ylim(transmin-5*std,yoffset-abs(transmin))
+            elif ylim is not None:
+                plt.ylim(ylim)
+            elif yoffsets is not None:
+                plt.ylim(transmin-5*std,yoffset)
             plt.xlim(xlim)
         if show_legend:
             plt.legend(loc=4) 
