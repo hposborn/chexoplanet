@@ -167,7 +167,7 @@ class chexo_model():
         self.logger.info("Initialised logger")
         self.logger.debug("Checking if logger prints to file or stream")
 
-    def get_tess(self,tic=None,**kwargs):
+    def get_tess(self,tic=None,cut_anom_robust=False,rem_pulsations=False,**kwargs):
         """Automatically download archival photometric (i.e. TESS) data using MonoTools.lightcurve
         This also automatically initialises the stellar parameters from the TIC catalogue info.
         tic (int, optional): TIC ID. If not present, we can get it from the TOI list
@@ -189,6 +189,10 @@ class chexo_model():
             self.radec=self.monotools_lc.radec
         self.monotools_lc.sort_timeseries()
         
+        if cut_anom_robust:
+            #Doing additional scatter/anomalous flux removal:
+            extramask=tools.cut_anom_robust(self.monotools_lc.time,self.monotools_lc.flux,self.monotools_lc.flux_err,fluxmask=self.monotools_lc.mask,**kwargs)
+            self.monotools_lc.mask=self.monotools_lc.mask&extramask
         Rstar, Teff, logg = starpars_from_MonoTools_lc(self.monotools_lc)
         self.init_starpars(Rstar=Rstar,Teff=Teff,logg=logg)
         
@@ -198,13 +202,51 @@ class chexo_model():
         misss=np.array([c[:2] for c in self.monotools_lc.cadence])
         for unq_miss_id in all_missions:
             self.logger.info("Lightcurves found with mission ID:"+unq_miss_id)
+
+            if rem_pulsations:
+                #removing pulsations
+                pulsmod=model_pulsations_bysector(self.monotools_lc.time,self.monotools_lc.flux,self.monotools_lc.flux_err,fluxmask=self.monotools_lc.mask,**kwargs)
+                self.monotools_lc.flux=self.monotools_lc.flux[:]-pulsmod
+            
             cad_ix=(self.monotools_lc.mask)&(misss==unq_miss_id)
             self.add_lc(self.monotools_lc.time[cad_ix]+2457000,self.monotools_lc.flux[cad_ix],
                         self.monotools_lc.flux_err[cad_ix],
                         source=lc_dic_flipped[unq_miss_id],mask=self.monotools_lc.mask[cad_ix])
         self.monotools_lc.plot()
 
-    def get_cheops(self, do_search=True, catname=None, n_prog=None, distthresh=3, download=True, use_PIPE=True, fks=None, start_date=None,end_date=None, vmag=None, **kwargs):
+    def find_existing_cheops_data(self,catname=None,fks=None,n_prog=None,distthresh=8*u.arcsec, **kwargs):
+        """Search local and online directories for existing CHEOPS data"""
+        try:
+            from dace_query.cheops import Cheops
+        except:
+            raise ImportError("Cannot import Dace. Check it is installed, or initialise the class with `get_cheops=False` and add a lightcurve with `mod.add_cheops_lc`")
+        these_cheops_obs=[]
+        
+        if fks is not None:
+            self.logger.debug("Attempting to get objects via filekey names",','.join(fks))
+            these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"file_key":{"equal":["CH_"+f if f[:2]=="PR" else f for f in fks]}}))
+        
+        catname=self.name if catname is None else catname
+        if fks is None or len(these_cheops_obs)==0:
+            self.logger.debug("Attempting to get objects via the catalogue name "+catname)
+            these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"obj_id_catname":{"equal":[catname]},"file_key":{"contains":"_V030"}}))
+        
+        if len(these_cheops_obs)==0 and hasattr(self,'radec'):
+            self.logger.debug("Checking separation between object in Dace catalogue and target RA/Dec "+str(self.radec.ra.deg)+" "+str(self.radec.dec.deg))
+            if n_prog is not None:
+                all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=500,filters={"prog_id":{"contains":str(int(n_prog))},"file_key":{"contains":"_V030"}}))
+            else:
+                all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=1500,filters={"file_key":{"contains":"_V030"}}))
+            self.logger.debug(str(len(all_cheops_obs))+"CHEOPS observations found")
+            all_radecs=SkyCoord([rd.split(" / ")[0] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
+                                [rd.split(" / ")[1] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values],
+                                unit=(u.hourangle,u.deg))
+            self.logger.debug("Minimum CHEOPS object distance: "+str(np.min(self.radec.separation(all_radecs).arcsec))+" | new nearby objs:")
+            these_cheops_obs=all_cheops_obs.loc[self.radec.separation(all_radecs).arcsec<distthresh]
+        assert len(these_cheops_obs)>0, "No observations found for "+catname
+        return these_cheops_obs
+
+    def get_cheops(self, do_search=True, catname=None, n_prog=None, distthresh=8*u.arcsec, download=True, fks=None, start_date=None,end_date=None, vmag=None, **kwargs):
         """Automatically download CHEOPS data using Dace.
 
         Args:
@@ -227,51 +269,7 @@ class chexo_model():
             if np.all(np.isin(fks,localfks)):
                 do_search=False
         if do_search:
-            these_cheops_obs=[]
-            n_try=0
-            while n_try<3 and len(these_cheops_obs)==0:
-                if n_try>0:
-                    self.logger.warning("DACE non-responsive... waiting 15secs. (NB - try logging in on DACE)")
-                    time.sleep(15)
-                try:
-                    from dace_query.cheops import Cheops
-                except:
-                    raise ImportError("Cannot import Dace. Check it is installed, or initialise the class with `get_cheops=False` and add a lightcurve with `mod.add_cheops_lc`")
-                self.logger.debug("Attempting to get objects via the catalogue name")
-                if fks is None:
-                    these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"obj_id_catname":{"equal":[catname]},"file_key":{"contains":"_V030"}}))
-                else:
-                    these_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"file_key":{"equal":["CH_"+f if f[:2]=="PR" else f for f in fks]}}))
-                try:
-                    if len(these_cheops_obs)==0:
-                        from dace_query.cheops import Cheops
-                        raise ValueError("No objects returned for name="+catname)
-                    if hasattr(self,'radec'):
-                        obs_radecs=SkyCoord([rd.split(" / ")[0] for rd in these_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
-                                            [rd.split(" / ")[1] for rd in these_cheops_obs['obj_pos_coordinates_hms_dms'].values],
-                                            unit=(u.hourangle,u.deg))
-                        self.logger.debug("Checking separation between object in Dace catalogue and target RA/Dec "+str(self.radec.ra.deg)+" "+str(self.radec.dec.deg))
-                        assert np.all(self.radec.separation(obs_radecs).arcsec<distthresh), "The RA/DEC of CHEOPS visits does not match the Ra/DEC included above"
-                except:
-                    self.logger.debug("Zero entries found when searching by name. Trying with coordinate")
-                    assert hasattr(self,'radec'), "If indexing by name does not work, we must have an RA/Dec coordinate"
-                    #Could not get it using the name, trying with the programme and the coordinates
-                    if n_prog is not None:
-                        self.logger.debug("Limiting search via programme ID; "+str(n_prog))
-                        all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"prog_id":{"contains":str(int(n_prog))},"file_key":{"contains":"_V030"}}))
-                    else:
-                        #Getting all data/all programmes
-                        all_cheops_obs=pd.DataFrame(Cheops.query_database(limit=50,filters={"prog_id":{"contains":"CHEOPS"},"file_key":{"contains":"_V030"}}))
-                    #Finding which target we have:
-                    self.logger.debug("All CHEOPS observations found:")
-                    self.logger.debug(all_cheops_obs)
-                    all_radecs=SkyCoord([rd.split(" / ")[0] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values], 
-                                        [rd.split(" / ")[1] for rd in all_cheops_obs['obj_pos_coordinates_hms_dms'].values],
-                                        unit=(u.hourangle,u.deg))
-                    these_cheops_obs=all_cheops_obs.loc[self.radec.separation(all_radecs).arcsec<distthresh]
-                    self.logger.debug("Minimum CHEOPS object distance: "+str(np.min(self.radec.separation(all_radecs).arcsec))+" | new nearby objs:")
-                    self.logger.debug(all_cheops_obs)
-                n_try+=1
+            these_cheops_obs=self.find_existing_cheops_data(catname=catname, n_prog=n_prog, distthresh=distthresh,fks=fks,**kwargs)
         else:
             #Purely getting the filekeys from the output directory and using those...
             localfks=[f.split("/")[-1] for f in glob.glob(os.path.join(self.save_file_loc,self.name.replace(" ","_"),"PR??????_????????_V0?00"))]
@@ -297,28 +295,30 @@ class chexo_model():
                     continue
             
             ifk=fk[3:] if fk[:3]=="CH_" else fk
-            if hasattr(self,'monotools_lc'):
+            if hasattr(self,'monotools_lc') and ifk not in self.cheops_filekeys:
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from MonoTools file")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=use_PIPE, mag=self.monotools_lc.all_ids['tess']['data']['GAIAmag'], **kwargs)
-            elif 'obj_mag_v' in these_cheops_obs.columns:
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, mag=self.monotools_lc.all_ids['tess']['data']['GAIAmag'], **kwargs)
+            elif 'obj_mag_v' in these_cheops_obs.columns and ifk not in self.cheops_filekeys:
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from Dace catalogue")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=use_PIPE, 
-                                   mag=these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'obj_mag_v'], **kwargs)
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, 
+                                   mag=these_cheops_obs.loc[these_cheops_obs['file_key']==fk,'obj_mag_v'].values[0], **kwargs)
                                    #self.monotools_lc.all_ids['tess']['data'][`'GAIAmag']
-            elif vmag is not None:
+            elif vmag is not None and ifk not in self.cheops_filekeys:
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; using magnitude from Dace catalogue")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=use_PIPE,
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download,
                                    mag=vmag, **kwargs)
                                    #self.monotools_lc.all_ids['tess']['data'][`'GAIAmag']
 
-            else:
+            elif ifk not in self.cheops_filekeys:
                 self.logger.debug("Adding CHEOPS lc for "+fk+"; without magnitude")
-                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, use_PIPE=use_PIPE, **kwargs)
-        if not use_PIPE:
+                self.add_cheops_lc(filekey=ifk, fileloc=None, download=download, **kwargs)
+            else:
+                self.logger.debug("Not adding CHEOPS lc for "+fk+"; as it is already present in the model; "+','.join(self.cheops_filekeys))
+        if not self.use_PIPE:
             #Need to make sure all the DRP apertures are the same
             self.assess_cheops_drp_apertures()
 
-    def filter_TOI(self,threshdist=3,**kwargs):
+    def filter_TOI(self,threshdist=3,toi_name=None,**kwargs):
         """Load the TOI list (using `get_TOI`) and then find the specific case which either refers to the name given to this target, or to the RA/Dec (within threshdic arcsec)
 
         Args:
@@ -329,8 +329,10 @@ class chexo_model():
         if "TOI" in self.name and int(self.name.replace('-','')[3:]) in self.toi_cat['star_TOI'].values:
             #Adding this as planet array
             self.init_toi_data=self.toi_cat.loc[self.toi_cat['star_TOI']==int(self.name.replace('-','')[3:])]
+        elif toi_name is not None and int(toi_name.replace('-','')[3:]) in self.toi_cat['star_TOI'].values:
+            self.init_toi_data=self.toi_cat.loc[self.toi_cat['star_TOI']==int(toi_name.replace('-','')[3:])]
         elif hasattr(self,'radec'):
-            toi_radecs=SkyCoord(info['RA'].values,info['Dec'].values,unit=(u.hourangle,u.deg))
+            toi_radecs=SkyCoord(self.toi_cat['RA'].values[0],self.toi_cat['Dec'].values[0],unit=(u.hourangle,u.deg))
             seps = self.radec.separation(toi_radecs)
             assert np.min(seps.arcsec)<3, "Must have at least one TOI within "+str(threshdist)+"arcsec"
             self.init_toi_data=self.toi_cat.loc[self.toi_cat['star_TOI']==self.toi_cat.iloc[np.argmin(seps)]['star_TOI']]
@@ -380,7 +382,7 @@ class chexo_model():
             self.lcs[source]=pd.DataFrame({'time':time,'flux':flux,'flux_err':flux_err})
             self.lcs[source]['mask']=np.tile(True,len(time)) if mask is None else mask
 
-    def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,optimise_klim=True,use_past_optimsation=True,**kwargs):
+    def run_PIPE(self,out_dir,fk,mag=None,overwrite=False,make_psf=False,binary=False,optimise_klim=True,use_past_optimsation=False,**kwargs):
         """
          Run Pipe to extract PSFs. This is a wrapper around the : py : func : ` ~psf. pipeline. PipeParam ` class and it's subarray extraction function
          
@@ -436,8 +438,6 @@ class chexo_model():
             pps = PipeParam(self.name.replace(" ","_"), fk, 
                             outdir=os.path.join(out_dir,fk,"Outdata","00000"),
                             datapath=os.path.join(out_dir,fk))
-            #pps.bgstars = True
-            pps.fit_bgstars = False
             
             if hasattr(self,'Teff') and self.Teff is not None:
                 pps.Teff = int(np.round(self.Teff[0]))
@@ -448,7 +448,7 @@ class chexo_model():
                 past_params = check_past_PIPE_params(out_dir)
                 print(past_params)
             
-            if use_past_optimsation and past_params is not None and len(past_params['im'])>0  and exptime<im_thresh:
+            if use_past_optimsation and past_params is not None and len(past_params['im'])>0  and past_params['im']['exists'] and exptime<im_thresh:
                 pps.im_optimise = False
                 #Setting key paramaters here:
                 pps.klip = int(past_params['im']['k'])
@@ -461,10 +461,13 @@ class chexo_model():
                 #        setattr(pps,kpar,past_params['im'][kpar])
             elif exptime<im_thresh:
                 pps.im_optimise = optimise_klim
-                pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                klip_lookup={'0':[1,3,5,7,9],'7.5':[1,3,5,7],'9':[1,3,5],'11':[1,2,3],'12.5':[1,2],'20':[1]}
+                klipkeys=[0,7.5,9,11,12.5,20]
+                pps.im_test_klips = klip_lookup[str(klipkeys[int(np.searchsorted(klipkeys,mag)-1)])]
+                #pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
                 self.logger.debug("Setting number of klip models to test from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
             
-            if use_past_optimsation and past_params is not None and len(past_params['sa'])>0 and exptime>=im_thresh:
+            if use_past_optimsation and past_params is not None and len(past_params['sa'])>0 and past_params['sa']['exists'] and exptime>=im_thresh:
                 pps.sa_optimise = False
                 #Setting key paramaters here:
                 pps.klip = int(past_params['sa']['k'])
@@ -474,22 +477,28 @@ class chexo_model():
                 pps.bStat =  bool(past_params['sa']['s'])
             elif exptime>=im_thresh:
                 pps.sa_optimise = optimise_klim
-                pps.sa_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                klip_lookup={'0':[1,3,5,7,9],'7.5':[1,3,5,7],'9':[1,3,5],'11':[1,2,3],'12.5':[1,2],'20':[1]}
+                klipkeys=[0,7.5,9,11,12.5,20]
+                # print(klipkeys,mag,type(mag))
+                # print(np.searchsorted(klipkeys,mag)-1,len(klipkeys))
+                # print(klipkeys[np.searchsorted(klipkeys,mag)-1])
+                # print(str(klipkeys[np.searchsorted(klipkeys,mag)-1]),klip_lookup.keys())
+                pps.sa_test_klips = klip_lookup[str(klipkeys[int(np.searchsorted(klipkeys,mag)-1)])]
                 self.logger.debug("Setting number of klip models to test from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
 
+            pps.nthreads = int(os.environ['OMP_NUM_THREADS']) #Specificially defining the number of threads as the default checks the whole CPU (e.g. 56 on this cluster)
             #pps.smear_fact = 5.5
-            pps.psf_score = None
-            pps.psf_min_num = 12
-            pps.cti_corr = True
+            #pps.psf_score = None
+            #pps.psf_min_num = 10
+            #pps.cti_corr = True#Default
             #pps.smear_resid = False
             #pps.smear_resid_sa = True
-            pps.non_lin_tweak = True
-
+            #pps.non_lin_tweak = True
             #pps.sigma_clip = 15
             #pps.empiric_noise = True
             #pps.empiric_sigma_clip = 4
             #pps.save_noise_cubes = False
-            pps.save_psfmodel = True
+            #pps.save_psfmodel = False
             #pps.fitrad = fitrad
             #pps.psflib = psf_locs2[best]
             #print(psf_locs2[best])
@@ -503,6 +512,7 @@ class chexo_model():
             if binary:
                 self.logger.debug("Running PIPE with a binary/companion star. Filekey="+fk)
                 pps.fit_bgstars = True
+                self.lim_fit = 0.003
                 #pps.binary = True
                 #pps.robust_centre_binary = True
                 #starcat=fits.open(glob.glob(os.path.join(out_dir,fk,"*_StarCatalogue-*.fits"))[0])
@@ -514,6 +524,8 @@ class chexo_model():
                 if make_psf:
                     pc.make_psf_lib()
             else:
+                pps.fit_bgstars = False #Let's always fit bg stars. This seems slow.
+                self.lim_fit = 0.02
                 pc = PipeControl(pps)
                 pc.process_eigen()
                 if make_psf:
@@ -554,7 +566,7 @@ class chexo_model():
             self.lcs['cheops'].loc[ix,'flux_err']=1e3*self.lcs['cheops'].loc[ix,'raw_flux_err']/np.nanmedian(self.lcs['cheops'].loc[ix&self.lcs['cheops']['mask'].values,'raw_flux'])
 
     def add_cheops_lc(self, filekey, fileloc=None, download=True, ylims=(-15,15), overwrite=False, bg_percentile_thresh=80,
-                      use_PIPE=True, PIPE_bin_src=None, mag=None, **kwargs):
+                      PIPE_bin_src=None, mag=None, **kwargs):
         """AI is creating summary for add_cheops_lc
 
         Args:
@@ -581,38 +593,42 @@ class chexo_model():
         if fileloc is None and download:
             from dace_query.cheops import Cheops
             n_attempts=0
-            while not os.path.isdir(os.path.join(out_dir,filekey)) and n_attempts<5:
+            hasfiles=os.path.isdir(os.path.join(out_dir,filekey)) and len(glob.glob(os.path.join(out_dir,filekey,"CH_PR*_SCI_RAW_SubArray_V0?00.fits")))>0 if self.use_PIPE else os.path.isdir(os.path.join(out_dir,filekey)) and len(glob.glob(os.path.join(out_dir,filekey,"CH_PR*SCI_COR_Lightcurve-DEFAULT_V0?00.fits")))>0
+            while n_attempts<5 and not hasfiles:
                 try:
                     self.logger.debug("Trying to download "+filekey+" from DACE")
-                    if not os.path.isdir(os.path.join(out_dir,filekey)):
-                        #Downloading Cheops data:
-                        if use_PIPE:
-                            self.logger.info("Downloading "+filekey+" with Dace to "+out_dir)
-                            Cheops.download('all', {'file_key': {'equal':["CH_"+str(filekey)]}},
-                                            output_directory=out_dir, 
-                                            output_filename=self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
-                            self.logger.info("Succeeded downloading "+filekey+" with Dace to "+out_dir+"/"+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
-                        else:
-                            #Assume DRP
-                            Cheops.download('lightcurves', {'file_key': {'equal':["CH_"+str(filekey)]}},
-                                            output_directory=out_dir, output_filename=self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
-                        time.sleep(30)
-                        os.system("tar -xvf "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz -C '+out_dir)
-                        #Deleting it
-                        self.logger.debug("Command:rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
-                        os.system("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz') #Deleting .tar file
-                        self.logger.debug("Command:rm "+out_dir+'/'+filekey+'/*.mp4')
-                        os.system("rm "+out_dir+'/'+filekey+'/*.mp4') #Deleting videos
+                    #Downloading Cheops data:
+                    if self.use_PIPE:
+                        self.logger.info("Downloading "+filekey+" with Dace to "+out_dir)
+                        Cheops.download('all', {'file_key': {'equal':["CH_"+str(filekey)]}},
+                                        output_directory=out_dir, 
+                                        output_filename=self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
+                        self.logger.info("Succeeded downloading "+filekey+" with Dace to "+out_dir+"/"+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
+                    else:
+                        #Assume DRP
+                        Cheops.download('lightcurves', {'file_key': {'equal':["CH_"+str(filekey)]}},
+                                        output_directory=out_dir, output_filename=self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
+                    time.sleep(30)
+                    os.system("tar -xvf "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz -C '+out_dir)
+                    #Deleting it
+                    self.logger.debug("Command:rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz')
+                    os.system("rm "+out_dir+'/'+self.name.replace(" ","_")+'_'+filekey+'_dace_download.tar.gz') #Deleting .tar file
+                    self.logger.debug("Command:rm "+out_dir+'/'+filekey+'/*.mp4')
+                    os.system("rm "+out_dir+'/'+filekey+'/*.mp4') #Deleting videos
                 except:
                     self.logger.debug("Waiting a bit... maybe Dace needs a break? Filekey="+filekey)
                     time.sleep(15)
                 self.logger.debug("new dir exists?"+str(os.path.isdir(os.path.join(out_dir,filekey))))
-                if not os.path.isdir(os.path.join(out_dir,filekey)):
-                    time.sleep(15)
+                hasfiles=os.path.isdir(os.path.join(out_dir,filekey)) and len(glob.glob(os.path.join(out_dir,filekey,"CH_PR*_SCI_RAW_SubArray_V0?00.fits")))>0 if self.use_PIPE else os.path.isdir(os.path.join(out_dir,filekey)) and len(glob.glob(os.path.join(out_dir,filekey,"CH_PR*SCI_COR_Lightcurve-DEFAULT_V0?00.fits")))>0
+
+                if not hasfiles:
+                    time.sleep(5)
                     n_attempts+=1
+                else:
+                    break
             assert os.path.isdir(os.path.join(out_dir,filekey)), "Unable to download filekey "+filekey+" using Dace."
         
-        if use_PIPE and ((fileloc is None) or (os.path.isdir(fileloc)) or overwrite) :
+        if self.use_PIPE and ((fileloc is None) or (os.path.isdir(fileloc)) or overwrite) :
             self.logger.debug("Running PIPE on "+filekey)
             fileloc = self.run_PIPE(out_dir, filekey, mag, **kwargs)
             self.logger.debug("fileloc="+fileloc)
@@ -648,7 +664,10 @@ class chexo_model():
                 self.logger.debug("Looping through DRP lcs="+",".join(v3list))
                 for v in v3list:
                     try:
-                        ap=v.split("-R")[-1].split("_")[0]
+                        if "DEFAULT" in v:
+                            ap='DEFAULT'
+                        else:
+                            ap=v.split("-R")[-1].split("_")[0]
                         aps+=[ap]
                         v3dic[ap]=v
                         f=Table.read(v,format='fits').to_pandas()
@@ -829,12 +848,16 @@ class chexo_model():
         elif np.isnan(logg[1]) or np.isnan(logg[2]):
             logg=[logg[0],0.25,0.25]
 
-        if Rstar is None and Teff is not None and not np.isnan(Teff[0]) and hasattr(self,'monotools_lc'):
+        if Rstar is None and Teff is not None and not np.isnan(Teff[0]):
             #Approximating from Teff
             Mstar=[(Teff[0]/5770)**(7/4)]
             Mstar+=[0.5*Mstar[0],0.5*Mstar[0]]
             Rstar=[Mstar[0]**(3/7)]
             Rstar+=[0.5*Rstar[0],0.5*Rstar[0]]
+        elif Rstar is not None and Teff is not None:
+            Mstar = [(Rstar[0]**2*(Teff[0]/5770)**4)**(1/4)]
+            Mstar+=[0.5*Mstar[0],0.5*Mstar[0]]
+        
         if logg is None and Mstar is not None and Rstar is not None:
             logg=[np.log(Mstar[0]/(Rstar[0]**2))+4.41]
             logg+=[np.log((Mstar[0]-Mstar[1])/((Rstar[0]+Rstar[2])**2))+4.41-logg[0]]
@@ -925,7 +948,10 @@ class chexo_model():
             force_check_per (bool, optional): Insist that we run TLS to check, using lightcurve data, if period can be improved.
         """
         assert name not in self.planets or overwrite, "Name is already stored as a planet"
-        assert not (tdur is None)&(b is None), "Must define either tdur or b"
+        if (tdur is None) and (b is None) and hasattr(self,'rhostar'):
+            #Assuming b=0.4 and a circular period
+            #(P/(18226*self.rhostar))**(1/3) = (tdur/1.83)
+            tdur=1.83*(period/(18226*self.rhostar))**(1/3)
 
         if period_err is None:
             if 'tess' in self.lcs:
@@ -1108,7 +1134,10 @@ class chexo_model():
         allt=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'time'].values for scope in self.lcs if scope!="cheops"])
         ally=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
         allyerr=np.hstack([self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux_err'].values for scope in self.lcs if scope!="cheops"])[np.argsort(allt)]
-        che_ix = list(self.lcs.keys()).index('cheops')
+        if 'cheops' in self.lcs:
+            che_ix = list(self.lcs.keys()).index('cheops')
+        else:
+            che_ix=999
         allsrcs=np.hstack([np.tile(iscope,len(self.lc_fit[list(self.lcs.keys())[iscope]]['time'])) for iscope in np.arange(len(self.lcs)) if iscope!=che_ix])[np.argsort(allt)]
         allsrcs=np.column_stack([np.isin(allsrcs,i) for i in np.arange(len(self.lcs)) if i!=che_ix])
         allt=np.sort(allt)
@@ -2418,7 +2447,6 @@ class chexo_model():
                 assert 'cheops' not in self.lcs, "We are assuming there is no CHEOPS lightcurve here"
                 self.model_params['log_likelihood']=pm.Deterministic("log_likelihood",pm.math.sum([pm.math.sum(self.model_params[scope+"_llk"]) for scope in self.lcs]))
 
-
                 #elif scope=="cheops":
                 #    #Doing cheops-specific stuff here.
                 #    self.logger.debug("NA")
@@ -2591,8 +2619,8 @@ class chexo_model():
                                     chains=self.n_cores, cores=self.n_cores, 
                                     start=self.init_soln, target_accept=0.8,
                                     return_inferencedata=True, 
-                                    idata_kwargs=dict(log_likelihood=True), #Adding these for large model sizes
-                                    **kwargs)#**kwargs)
+                                    idata_kwargs=dict(log_likelihood=True)) #Adding these for large model sizes
+            #                        **kwargs)#**kwargs)
 
             # self.trace = pmx.sample(tune=n_tune_steps, draws=n_draws, 
             #                         chains=int(n_chains*n_cores), cores=n_cores, 
@@ -2796,6 +2824,8 @@ class chexo_model():
     def save_trace_summary(self, trace=None, suffix="", returndf=True):
         """Make a csv of the pymc model """
         trace=self.trace if trace==None else trace
+
+        print(type(trace),trace)
         assert not (suffix=="" and trace is None), "If you're using a non-standard trace, please include a distinct file suffix."
 
         var_names=[var for var in trace.posterior if 'gp_' not in var and 'model_' not in var and '__' not in var and (np.product(trace.posterior[var].shape)<6*np.product(trace.posterior['Rs'].shape) or 'transit_times' in var)]
@@ -3225,7 +3255,7 @@ class chexo_model():
                 if len(fks)==len(self.cheops_filekeys):
                     fk_string="Shared"
                 else:
-                    fk_string=",".join(list(fks)).replace("_","\_").replace("_V0200","")
+                    fk_string=",".join(list(fks)).replace("_","\_").replace("_V0200","").replace("_V0300","")
                 if varname=='time':
                     tab+=[[decorr,'Linear decorrelation, '+fk_string+', $dy/d{'+newvarname+'}$','','normal',
                         0,np.nanmedian([np.ptp(self.norm_cheops_dat[fk][varname])/self.cheops_mads[fk] for fk in fks])]]
@@ -3251,7 +3281,7 @@ class chexo_model():
                     tab+=[[decorr,'Quadratic decorrelation, '+fk_string+', $d^2y/d{'+newvarname+'}^2$','','normal',
                         0,np.nanmedian([self.cheops_mads[fk] for fk in fks])]]
             for fk in self.cheops_filekeys:
-                tab+=[['cheops_mean_'+fk,"Cheops "+fk.replace("_","\_").replace("_V0200","")+" mean flux","[ppt]","normal",np.nanmedian(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values),np.nanstd(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)]]
+                tab+=[['cheops_mean_'+fk,"Cheops "+fk.replace("_","\_").replace("_V0200","").replace("_V0300","")+" mean flux","[ppt]","normal",np.nanmedian(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values),np.nanstd(self.lcs["cheops"].loc[self.cheops_fk_mask[fk],'flux'].values)]]
             if self.fit_phi_gp:
                 tab+=[['rollangle_logpower',"${\\rm GP}_{\\rm CHEOPS}$, $\log{\\rm power}$","","normal",-6,1]]
                 tab+=[['rollangle_logw0',"${\\rm GP}_{\\rm CHEOPS}$, $\log{\\rm \\omega_0}$","","normal",np.log((2*np.pi)/100),1]]
@@ -3426,7 +3456,7 @@ class chexo_model():
 
         #Saving the trace summary
         if hasattr(self,'trace') and not hasattr(self, 'trace_summary'):
-            self.save_trace_summary
+            self.save_trace_summary()
         elif hasattr(self, 'trace'):
             suffix='' if suffix is None else suffix
             self.trace_summary.to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_model_summary"+suffix+".csv"))
@@ -3692,7 +3722,7 @@ class chexo_model():
             save_suffix="" if save_suffix is None else save_suffix
             plt.savefig(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+save_suffix+"_cheops_plots"+save_suffix+"."+savetype),transparent=transparent)
     
-    def plot_cheops_absphot(self,save=True,savetype='png',save_suffix=None,split_by_sects=True,ylim=None):
+    def plot_cheops_absphot(self,save=True,savetype='png',save_suffix=None,split_by_sects=True,ylim=None,n_gaps=1):
         plt.clf()
         #Plotting absolute photometry
         self.lcs['cheops']['raw_flux_medium_offset'] = np.zeros(len(self.lcs['cheops']))
@@ -3717,7 +3747,7 @@ class chexo_model():
         self.make_cheops_timeseries(overwrite=True)
         assert 'raw_flux_medium_offset' and 'raw_flux_medium_offset_centroidcorr' in self.models_out['cheops'].columns, "Make Cheops Timeseries did not place raw_flux_medium_offset into out DF..."
         if split_by_sects:
-            sectinfo = self.init_phot_plot_sects_noprior('cheops', n_gaps=2, typic_dist=100, min_gap_thresh=0.6)
+            sectinfo = self.init_phot_plot_sects_noprior('cheops', n_gaps=n_gaps, typic_dist=100, min_gap_thresh=0.6)
         else:
             sectinfo={'all':{'start':np.min(self.lcs['cheops']['time'])-0.1,'end':0.1+np.max(self.lcs['cheops']['time'])}}
         for ns,sectname in enumerate(sectinfo):
@@ -4645,7 +4675,7 @@ class chexo_model():
                 assert hasattr(self, "radec"), "If you do not specify the Gaia DR2 ID then there must be a `radec` quantity initialised in the model"
                 from astroquery.gaia import Gaia
                 from astropy import units as u
-                tab=Gaia.conesearch(sdelf.radec,radius=5*u.arcsec).results[0].to_pandas()
+                tab=Gaia.conesearch(self.radec,radius=5*u.arcsec).results[0].to_pandas()
                 tab=tab.loc[tab['phot_g_mean']<12.5]
                 DR2ID=tab.loc[np.argmin(tab['distance']),'ID']
                 if type(DR2ID)==pd.Series or type(DR2ID)==pd.DataFrame: 
@@ -4684,6 +4714,133 @@ class chexo_model():
                 plandatfile.write(outstr+"\n")
         #for mod in self.models_out:
         #    self.models_out[mod].to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+mod+"_timeseries.csv"))
+
+    def MakeCheopsOR(self, pl, t_start=None,t_end=None,n_timing_sigma=3,min_eff=45,ObsReqComment="Chateaux_obs",prog_id="9000",
+                    orbits_in_bestfit_ephem=0.5, obs_dur=3, orbits_for_detn=0.75, always_cover_bestfit=True, set_Nobs_from_SN=True, **kwargs):
+        """
+        Given a trace table, create a csv which can be run by pycheops make_xml_files to produce 
+            input observing requests (both to FC and observing tool).
+
+        Args:
+            row (pd.Series) - pandas series obecjt with the necessary columns
+            t_start (float,optional) - Time in JD for the scheduler to start adding ORs. default is None
+            t_end (float,optional) - Time in JD for the scheduler to end latest ORs. default is None
+            n_timing_sigma (float,optional) - Number of sigma timing to cover. Default is 3
+            always_cover_bestfit (float,optional) - Do we want to force ORs to cover some of the default is True
+            orbits_in_bestfit_ephem (float,optional) - Number of orbits to count as "covering" the best-fit ephemerides. Default is 0.5
+            obs_dur (float,optional) - default is 3
+            orbits_for_detn (float,optional) - default is 0.75
+        """
+        #Accessing GAIA DR2 ID:
+        from astroquery.gaia import Gaia
+        from astropy.coordinates import SkyCoord, Distance, get_body
+
+        assert hasattr(self,'trace_summary'), "Must have run `save_trace_summary` to generate trace"
+        
+        gaiainfo = Gaia.cone_search_async(self.radec, radius=8*u.arcsec).get_results().to_pandas()
+        if len(gaiainfo)==0:
+            gaiainfo = Gaia.cone_search_async(self.radec, radius=16*u.arcsec).get_results().to_pandas()
+        print(self.radec,gaiainfo)
+        if len(gaiainfo)>0:
+            gaiainfo=gaiainfo.loc[np.argmin(gaiainfo['phot_g_mean_mag'].values)]
+
+        teff=self.Teff[0]
+        DR2ID = gaiainfo['DESIGNATION'].replace("DR2","DR3")
+        gaia_colour=(gaiainfo['phot_bp_mean_mag']-gaiainfo['phot_rp_mean_mag'])
+        V=gaiainfo['phot_g_mean_mag']+0.0176+0.00686*gaia_colour+0.1732*gaia_colour**2
+        Verr=1.09/gaiainfo['phot_g_mean_flux_over_error']+0.045858
+        t=Time(gaiainfo['ref_epoch'], format='jyear')
+        #Getting spectral type:
+        from astropy.io import ascii
+        tab=ascii.read("EEM_dwarf_UBVIJHK_colors_Teff.txt",header_start=23,data_start=24,data_end=118).to_pandas().loc[:,['SpT','Teff']]
+        SpTy = tab['SpT'].values[np.argmin(abs(teff-tab['Teff']))][:2]
+        if hasattr(self,'init_toi_data'):
+            starname="TOI"+str(self.init_toi_data['star_TOI']).split('.')[0].replace('TOI','').replace('-','').replace(' ','')
+        else:
+            starname=self.name.replace(" ","_")
+        #Getting J2000 coordinates:
+        if np.isfinite(gaiainfo['pmra']) and np.isfinite(gaiainfo['pmdec']):
+            newcoord = SkyCoord(ra=gaiainfo['ra']* u.deg,dec=gaiainfo['dec']* u.deg,
+                                distance=Distance(parallax=gaiainfo['parallax'] * u.mas),
+                                pm_ra_cosdec=gaiainfo['pmra'] * u.mas/u.yr, pm_dec=gaiainfo['pmdec'] * u.mas/u.yr,
+                                obstime=Time(gaiainfo['ref_epoch'], format='jyear'))
+            old_radec=newcoord.apply_space_motion(Time(2000, format='jyear'))
+        else:
+            old_radec= SkyCoord(ra=gaiainfo['ra']*u.deg,dec=gaiainfo['dec']* u.deg)
+        
+        ser={}
+        ser['ObsReqName']=ObsReqComment+"_"+starname
+        ser['Target']=starname
+        ser['_RAJ2000']=old_radec.ra.to_string(unit=u.hourangle, sep=':')
+        ser['_DEJ2000']=old_radec.dec.to_string(sep=':')
+        ser['SpTy']=SpTy
+        ser['Gmag']=gaiainfo['phot_g_mean_mag']
+        ser['e_Gmag']=1.09/gaiainfo['phot_g_mean_flux_over_error']
+        ser['Vmag']=V
+        ser['e_Vmag']=Verr
+
+        ser['Programme_ID']=prog_id
+
+        #Getting start and end times using most-visible period in the next year
+        
+        #Using the moment the target rises/sets in the next 18 months as the start/end times
+        fine_times=np.arange(Time.now().jd,Time(Time.now().jd+1.25,format='jyear').jd,0.1)
+        sun_coo = get_body('sun', Time(fine_times,format='jd',scale='tdb'))
+        seps=sun_coo.separation(old_radec)
+        t_start=np.min(fine_times[seps.deg>112])-1.5
+        t_end=np.max(fine_times[seps.deg>112])+1.5
+        
+        #Sorting out edge cases:
+        if t_start>t_end and (t_end-Time.now().jd)>30:
+            t_start-=365.25
+        elif (t_end-Time.now().jd)<30:
+            t_end+=365.25
+        
+        if set_Nobs_from_SN:
+            #Getting expected CHEOPS SNR
+            dep_ppm = 1e6*self.trace_summary.loc['ror_'+pl,'mean']**2
+            noise_ppm = 1.5*(18+np.power(2.5,(gaiainfo['phot_g_mean_mag']-7.3))) #in 3hr bin
+            che_snr = dep_ppm/(np.sqrt(0.5*self.trace_summary.loc['tdur_'+pl,'mean']/0.125)*noise_ppm) #assuming worst efficiency, i.e. 50% of duration
+            #Threshold for 2 transits = 15
+            if che_snr<15:
+                ser['N_Visits']=2
+            elif che_snr<9:
+                ser['N_Visits']=3
+            elif che_snr<5:
+                ser['N_Visits']=0
+            else:
+                ser['N_Visits']=1
+            #Threshold for 3 transits = 9
+        else:
+            ser['N_Visits']=1
+
+        ser['BJD_early']=t_start
+        ser['BJD_late']=t_end
+        ser['T_visit']=int(98.77*60*obs_dur)
+        ser['MinEffDur']=int(min_eff)
+        assert min_eff>30
+        ser['Gaia_DR2']=str(DR2ID)
+        ser['BJD_0']=self.trace_summary.loc['t0_'+pl,'mean']
+        ser['Period']=self.trace_summary.loc['P_'+pl,'mean']
+
+        n_trans_av = np.round(((0.5*(t_end+t_start))-ser['BJD_0'])/ser['Period'])
+            
+        if always_cover_bestfit:
+            #Always covering at least orbits_in_bestfit_ephem (~0.75) of the best-fit ephemeris.
+            ser['Ph_early'] = (-1*obs_dur*98.7/1440-0.5*self.trace_summary.loc['tdur_'+pl,'mean']+orbits_in_bestfit_ephem*98.7/1440)/ser['Period']%1
+            ser['Ph_late'] = (0.5*self.trace_summary.loc['tdur_'+pl,'mean']-orbits_in_bestfit_ephem*98.7/1440)/ser['Period']%1
+        else:
+            #Only covering the timing window, and not caring about missing the best-fit window.
+            ser['Ph_early'] = (-n_trans_av*n_timing_sigma*self.trace_summary.loc['P_'+pl,'sd']+0.5*self.trace_summary.loc['tdur_'+pl,'mean']-orbits_for_detn*98.7/1440)/rser['Period']%1
+            ser['Ph_late'] = (n_trans_av*n_timing_sigma*self.trace_summary.loc['P_'+pl,'sd']-0.5*self.trace_summary.loc['tdur_'+pl,'mean']+orbits_for_detn*98.7/1440-obs_dur*98.7/1440)/ser['Period']%1
+        
+        ser['Priority']=int(3)
+        ser['Old_T_eff']=-99.
+        ser['N_Ranges']=0
+        
+        ser = pd.Series(ser,name=row['TOI'])     
+        ser.to_csv(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+"_"+pl+"_PHT2_OR.csv"))
+        return ser
 
     def output_cds_table(self, papertitle, paperauthor, paperabstract, extra_tables=None, extra_descs=None):
         """
