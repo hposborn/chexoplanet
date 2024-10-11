@@ -129,17 +129,23 @@ def weighted_avg_and_std(values, errs, masknans=True, axis=None):
     else:
         return [np.nan, np.nan]
 
-def bin_lc_segment(lc_segment, binsize, return_digi=False):
+def bin_lc_segment(lc_segment, binsize, return_digi=False,**kwargs):
     if len(lc_segment)>0:
-        binnedx = np.arange(np.min(lc_segment[:,0])-0.5*binsize,np.max(lc_segment[:,0])+0.5*binsize,binsize)
-        return binlc_given_x(lc_segment,binnedx,return_digi)
+        binnedx = np.arange(np.min(lc_segment[:,0])+0.5*binsize,np.max(lc_segment[:,0])+0.5*binsize,binsize)
+        #binnedx=binnedx[binnedx]
+        return binlc_given_x(lc_segment,binnedx,return_digi,**kwargs)
     else:
         return lc_segment
     
-def binlc_given_x(lc_segment,binnedx, return_digi=False):
+def binlc_given_x(lc_segment, binnedx, return_digi=False,average_time=True,**kwargs):
     digi=np.digitize(lc_segment[:,0],binnedx)
-    binlc=np.vstack([[[np.nanmedian(lc_segment[digi==d,0])]+\
-                                weighted_avg_and_std(lc_segment[digi==d,1],lc_segment[digi==d,2])] for d in np.unique(digi)])
+    if average_time:
+        binlc=np.vstack([[[np.nanmedian(lc_segment[digi==d,0])]+\
+                                    weighted_avg_and_std(lc_segment[digi==d,1],lc_segment[digi==d,2])] for d in np.unique(digi)])
+    else:
+        binlc=np.vstack([[[binnedx]+\
+                                    weighted_avg_and_std(lc_segment[digi==d,1],lc_segment[digi==d,2])] for d in np.unique(digi)])
+
     if return_digi:
         return binlc, digi
     else:
@@ -157,11 +163,22 @@ def check_past_PIPE_params(folder):
     past_fk_params={}
     allkeys={'im':[],'sa':[]}
     #Looping over all filekeys:
-    for fk in past_fks:
+    for fk in past_fks:        
         ifk=os.path.basename(os.path.normpath(fk))
         pipefold=os.path.join(folder,fk,"Outdata","00000")
+
         past_fk_params[ifk]={'im':{},'sa':{}}
-        if os.path.exists(os.path.join(pipefold,"logfile.txt")):
+
+        imfitsloc=glob.glob(os.path.join(pipefold,"*_sa.fits"))
+        safitsloc=glob.glob(os.path.join(pipefold,"*_sa.fits"))
+        if len(imfitsloc)>0:
+            hdr=fits.open(imfitsloc[0])[0].header
+            past_fk_params[ifk]['im']={'bg':hdr['PIPE_BG'],'k':hdr['PIPE_KLP'],'r':hdr['PIPE_RAD'],'d':hdr['PIPE_DRK'],'s':hdr['PIPE_ST'],'mad':hdr['PIPE_MAD']}
+        if len(safitsloc)>0:
+            hdr=fits.open(safitsloc[0])[0].header
+            past_fk_params[ifk]['sa']={'bg':hdr['PIPE_BG'],'k':hdr['PIPE_KLP'],'r':hdr['PIPE_RAD'],'d':hdr['PIPE_DRK'],'s':hdr['PIPE_ST'],'mad':hdr['PIPE_MAD']}
+
+        if len(past_fk_params[ifk]['im'])==0 and len(past_fk_params[ifk]['sa'])==0 and os.path.exists(os.path.join(pipefold,"logfile.txt")):
             #Opening the logfile for each:
             with open(os.path.join(pipefold,"logfile.txt")) as flog:
                 #Searching for and saving lines with format: Fri Apr 19 13:20:48 2024 [4.45 min] k: 7, r: 25, bg: 1, d: 1, s: 1, mad=311.78 [im]
@@ -280,7 +297,98 @@ def check_past_PIPE_params(folder):
     return pkey_modes
 
 #Copied from Andrew Vanderburg:
-    
+
+def sigma_offset(y,yerr,inbox,outbox):
+    """Computes the offet of y within some boolean "box" to the boolean "outside" region. 
+    It returns the distance normalised to the computed standard deviation (i.e. Nsigma)"""
+    return (np.nanmedian(y[inbox])-np.nanmedian(y[outbox]))/np.sqrt((0.5*(np.nanmedian(yerr[inbox|outbox])+np.nanstd(y[inbox])))**2/np.sum(inbox)+np.nanstd(y[outbox])**2/np.sum(outbox))
+
+def scatter_ratio(y,yerr,inbox,outbox):
+    """Calculates the ratio of in-box derived variability (e.g. standard deviation) 
+    compared to the expected out-of-box variability from an average of local SD, global SD and flux error"""
+    return np.nanstd(y[inbox])-(0.3333*(np.nanstd(y[outbox])+np.nanstd(y[~inbox])+np.nanmedian(yerr[outbox])))
+
+def out_of_box_check(x,y,yerr,xboxlocs,xboxsize=0.1,xboxbufferfact=0.25,xboxproxfact=5):
+    """Runs two checks - sigma offset and scatter ratio - on a box given x, y & yerr data"""
+    #Returns sigma offset between in and out of box values for a series of box locations
+    inbox=abs(x[None,:]-xboxlocs[:,None])<0.5*xboxsize
+    outbox=(abs(x[None,:]-xboxlocs[:,None])<0.5*xboxsize*xboxproxfact)&(abs(x[None,:]-xboxlocs[:,None])<(0.5+xboxbufferfact)*xboxsize)
+    return np.vstack([[sigma_offset(y,yerr,inbox[n],outbox[n]), scatter_ratio(y,yerr,inbox[n],outbox[n])] for n in range(len(xboxlocs))])
+    #return np.vstack([[sigma_offset(y,inbox[n],outbox[n]),sigma_offset(y,inbox[n],~inbox[n]), scatter_ratio(y,inbox[n],outbox[n]), scatter_ratio(y,inbox[n],~inbox[n])] for n in range(len(xboxlocs))]), inbox
+    #return np.hstack([(np.average(y[inbox[n]])-np.nanmedian(y[outbox[n]]))/np.nanstd(y[inbox[n]]) for n in range(len(xboxlocs))]), inbox
+
+def edge_weight(x,max_cad_jump=50):
+    """Computes a Gaussian convolution of maximum difference (relative to average/minimum time cadence) for each point in time.
+    This can then be used to downweight e.g. automated anomaly detections from flagging edges."""
+    diff_arr=np.vstack([np.hstack((np.diff(x)[0],np.diff(x))),np.hstack((np.diff(x),np.diff(x)[-1]))])
+    local_cadence=np.min(diff_arr,axis=0)
+    max_jumps=(np.hstack([max_cad_jump,np.clip(np.max(diff_arr[:,1:-1],axis=0)/local_cadence[1:-1],0,max_cad_jump),max_cad_jump]))/max_cad_jump
+    window = signal.gaussian(31, std=1.25)
+    conv_dat=np.convolve(max_jumps,window)[15:-15]
+    conv_dat-=np.nanmedian(conv_dat)
+    conv_dat/=np.max(conv_dat)
+    return (1-conv_dat)
+
+def cut_anom_robust(time,flux,flux_err,fluxmask=None,anomfluxthresh=5,anomerrthresh=6,min_error_binsize=0.15,remthresh=0.75,minbin=1/24,maxbin=2.5,nbins=13,nbinstarts=5):
+    """Computes two robust anomaly checks for flux data. The script bins the data in various ways, comparing for each the:
+    1) difference between in-bin and out-of-bin flux 
+    2) differnece between in-bin and expected scatter
+    It then identifies anomalies based on thresholds to remove high-flux and high-scatter regions.
+    time
+    flux
+    flux_err
+    anomfluxthresh=5
+    anomerrthresh=5
+    remthresh=0.75, threshold in bin width beyond which to remove identified anomalies from DF
+    minbin=1/24
+    maxbin=2.5
+    nbins=13, 
+    nbinstarts=5 """
+    fluxmask=np.tile(True,len(time)) if fluxmask is None else fluxmask
+    allbins=np.geomspace(minbin,maxbin,nbins)
+    bindfs=[]
+    for ibin in allbins:
+        dfs=[]
+        
+        for istart in np.linspace(-0.5,0.5,nbinstarts+2)[1:-1]:
+            xbins=np.arange(np.min(time)-istart*ibin,np.max(time)+(1-istart)*ibin,ibin)
+            xbins=xbins[np.min(abs(xbins[:,None]-time[None,:]),axis=1)<0.5*ibin]#Removing bins with no times inside
+            snrs=out_of_box_check(time[fluxmask], flux[fluxmask], flux_err[fluxmask], xbins, xboxsize=ibin)
+            dfs+=[pd.DataFrame({'xbins':xbins, 'snr_flux':snrs[:,0], 'snr_err':snrs[:,1], 
+                                'edge_weights':edge_weight(xbins), 'binsize':np.tile(ibin,len(xbins)), 'i_start':np.tile(istart,len(xbins))})]
+        bindfs+=[pd.concat(dfs)]
+        #Normalising error scatter
+        bindfs[-1]['snr_err']/=np.nanstd(bindfs[-1]['snr_err'])
+        #including a term which punishes small bins higher
+        bindfs[-1].loc[bindfs[-1]['binsize']<min_error_binsize,'snr_err']=0.0
+        #bindfs[-1]['snr_err']*=np.sqrt(bindfs[-1]['binsize']/(20*np.nanmedian(np.diff(time))))
+    df=pd.concat(bindfs)
+    dfmask=np.tile(True,len(df))
+    nanom=np.sum((df['snr_flux']*df['edge_weights']>anomerrthresh)|(df['snr_err']>anomfluxthresh))
+    maxfluxanom=np.max(df['snr_flux']*df['edge_weights'])
+    maxerranom=np.max(df['snr_err'])
+
+    while nanom>1:
+        if maxfluxanom>anomfluxthresh or np.max(df.loc[dfmask,'snr_err'])>anomerrthresh:
+            if maxfluxanom>maxerranom:
+                #Flux anom dominates
+                row = df.loc[dfmask&(df['snr_flux']*df['edge_weights']==maxfluxanom)]
+                if type(row)==pd.DataFrame:
+                    row=row.iloc[np.argmin(df['binsize'])]#If multiple, taking smallest binsize
+            else:
+                #Err anom dominates
+                row = df.loc[dfmask&(df['snr_err']==maxerranom)]
+                if type(row)==pd.DataFrame:
+                    row=row.iloc[np.argmin(df['binsize'])]#If multiple, taking smallest binsize
+            fluxmask[fluxmask] = abs(time[fluxmask]-row['xbins'])>0.5*row['binsize']
+            dfmask[dfmask] = abs(row['xbins']-np.exp(0.5*(np.log(df.loc[dfmask,'xbins'])+np.log(row['xbins']))))>remthresh*df.loc[dfmask,'binsize']
+            maxfluxanom=np.max(df.loc[dfmask,'snr_flux']*df.loc[dfmask,'edge_weights'])
+            maxerranom=np.max(df.loc[dfmask,'snr_err'])
+            nanom  = np.sum((df.loc[dfmask,'snr_flux']*df.loc[dfmask,'edge_weights']>anomerrthresh)|(df.loc[dfmask,'snr_err']>anomfluxthresh))
+        else:
+            nanom = 0
+    return fluxmask
+
 def robust_mean(y, cut):
     """Computes a robust mean estimate in the presence of outliers.
     Args:
@@ -966,7 +1074,7 @@ def CutHighRegions(flux, mask, std_thresh=3.2,n_pts=25,n_loops=2):
                            ,axis=0)[1:-1]<20
     return mask
 
-def CutAnomDiff(flux,thresh=4.2):
+def CutAnomDiff(flux,thresh=4.2,return_bool=True):
     #Uses differences between points to establish anomalies.
     #Only removes single points with differences to both neighbouring points greater than threshold above median difference (ie ~rms)
     #Fast: 0.05s for 1 million-point array.
@@ -974,10 +1082,18 @@ def CutAnomDiff(flux,thresh=4.2):
     diffarr=np.vstack((np.diff(flux[1:]),np.diff(flux[:-1])))
     diffarr/=np.median(abs(diffarr[0,:]))
     #Adding a test for the first and last points if they are >3*thresh from median RMS wrt next two points.
-    anoms=np.hstack((abs(flux[0]-np.median(flux[1:3]))<(np.median(abs(diffarr[0,:]))*thresh*5),
-                     ((diffarr[0,:]*diffarr[1,:])>0)+(abs(diffarr[0,:])<thresh)+(abs(diffarr[1,:])<thresh),
-                     abs(flux[-1]-np.median(flux[-3:-1]))<(np.median(abs(diffarr[0,:]))*thresh*5)))
-    return anoms
+    if return_bool:
+        anoms=np.hstack((abs(flux[0]-np.median(flux[1:3]))<(np.median(abs(diffarr[0,:]))*thresh*5),
+                        ((diffarr[0,:]*diffarr[1,:])>0)+(abs(diffarr[0,:])<thresh)+(abs(diffarr[1,:])<thresh),
+                        abs(flux[-1]-np.median(flux[-3:-1]))<(np.median(abs(diffarr[0,:]))*thresh*5)))
+        return anoms
+    else:
+        #returning float array scaled to thresh
+        anoms=np.hstack((abs(flux[0]-np.median(flux[1:3]))/(np.median(abs(diffarr[0,:]))*thresh*5),
+                        np.sign(diffarr[0,:]*diffarr[1,:])*(abs(diffarr[0,:])/thresh+abs(diffarr[1,:])/thresh),
+                        abs(flux[-1]-np.median(flux[-3:-1]))/(np.median(abs(diffarr[0,:]))*thresh*5)))
+        return anoms
+
 
 def find_time_regions(time,split_gap_size=1.5,**kwargs):
     if np.nanmax(np.diff(np.sort(time)))>split_gap_size:
@@ -1276,6 +1392,7 @@ def GetExoFop(icid, mission='tess',file=''):
     outdat={}
     outdat['mission']=mission.lower()
     #Searching TESS and K2 ExoFop for info (and TIC-8 info):
+    import requests
     req=requests.get("https://exofop.ipac.caltech.edu/"+mission.lower()+"/download_target.php?id="+str(icid), timeout=120)
     if req.status_code==200:
         #Splitting into each 'paragraph'
@@ -1378,3 +1495,114 @@ def GetExoFop(icid, mission='tess',file=''):
         return None, kicinfo
     else:
         return None, None
+
+def find_high_scatter(time, flux, flux_err, err_thresh = 3.5, flux_thresh=4.5):
+    #Find regions with anomalously high scatter, flux_err and/or flux values
+    #1) bin to successively larger bin sizes.
+    #2) Each time compare rms to median and clip those regions with error greater than threshold and/or flux Y above threshold
+    #3) Clip those and recompute
+    
+    mincad = np.nanmedian(abs(np.diff(time)))
+    dataspan =np.sum(np.diff(time)[np.diff(time)<0.5])
+    #Checking 8 steps between 3x the cadence and 10% of the data span:
+    bin_sizes = np.geomspace(mincad*3, dataspan/10, 8)
+    newmask = np.tile(True,len(time))
+    for ibin in bin_sizes:
+        ibinlc, digi = bin_lc_segment(np.column_stack((time[newmask],flux[newmask],flux_err[newmask])),return_digi=True)
+        sigma_errs = scipy.stats.norm(np.nanmedian(ibinlc[:,2]),np.nanstd(ibinlc[:,2])).pdf(ibinlc[:,2])
+        sigma_fluxes = scipy.stats.norm(np.nanmedian(ibinlc[:,1]),np.nanstd(ibinlc[:,1])).pdf(ibinlc[:,1])
+        mask_update=np.tile(False,np.sum(newmask))#Make mask same length as time[newmask]
+        for d in digi[(abs(sigma_errs)>err_thresh)|(flux_thresh>err_thresh)]:
+            #Loop through those points out-of-bound and make false
+            mask_update[digi==d]=False
+        #Update the total mask
+        newmask[newmask]=mask_update
+    return newmask
+
+
+
+def fit_sin_bootstrap(p0, datax, datay, datayerr, function, bounds=(), n_bootstrap=5100,bootbinsize=0.5):
+
+    errfunc = lambda p, x, y, yerr: np.average((function(p,x) - y)**2/yerr)
+
+    # Fit first time
+    print(function(p0,datax),errfunc(p0,datax,datay, datayerr))
+    print(p0,bounds)
+    pfit = optimize.fmin_slsqp(errfunc, p0, args=(datax, datay, datayerr), bounds=bounds, iprint=0, full_output=0)
+
+    # 100 random data sets are generated and fitted
+    models = []
+    ps = []
+    
+    loc_bins=((datax-datax[0])/bootbinsize).astype(int)
+    n_bins=np.unique(loc_bins)
+    for i in range(n_bootstrap):
+        randombins=np.random.choice(n_bins,size=int(len(n_bins)*0.9),replace=False)
+        randommask=np.isin(loc_bins,randombins)
+        randomDelta = np.random.normal(np.zeros(np.sum(randommask)), (1+(0.1*i/n_bootstrap))*datayerr[randommask])
+        randomdataY = datay[randommask] + randomDelta
+
+        randomfit = optimize.fmin_slsqp(errfunc, p0, args=(datax[randommask], randomdataY, datayerr[randommask]),
+                                bounds=bounds, iprint=0, full_output=0)
+
+        ps.append(randomfit) 
+        models.append(function(randomfit,datax))
+
+    ps = np.array(ps)
+    mean_pfit = np.mean(ps,0)
+
+    # You can choose the confidence interval that you want for your
+    # parameter estimates: 
+    Nsigma = 1. # 1sigma gets approximately the same as methods above
+                # 1sigma corresponds to 68.3% confidence interval
+                # 2sigma corresponds to 95.44% confidence interval
+    err_pfit = Nsigma * np.std(ps,0) 
+
+    pfit_bootstrap = mean_pfit
+    perr_bootstrap = err_pfit
+    return pfit_bootstrap, perr_bootstrap, np.vstack(models)
+
+def model_pulsations(time,flux,flux_err,pthresh=0.015,amp_thresh=2.0,**kwargs):
+    #Finding & modelling sinusoidal pulsation
+    from astropy.stats import LombScargle
+    cad=np.nanmedian(np.diff(time))
+    freq, power = LombScargle(time, flux).autopower(maximum_frequency=1/np.max([cad*5,0.1]))
+
+    #Getting initial period/amp/t0s by binning:optimize.leastsq
+    init_per = 1/freq[np.argmax(power)]
+    binlc=bin_lc_segment(np.column_stack(((time-time[0])%init_per,flux,flux_err)),init_per/10)
+    #plt.plot(binlc[:,0],binlc[:,1])
+    init_amp = np.ptp(binlc[:,1])
+    init_t0 = time[0]+binlc[np.argmax(binlc[:,1]),0]
+    
+    print([init_amp, init_t0, init_per])
+    
+    #Quick model to optimise with the 
+    def sin_model(args, time):
+        return args[0]*np.sin(2*np.pi*(time-args[1])/args[2])
+
+    #Bootstrap model to optimise
+    pfit, perr, models = fit_sin_bootstrap([init_amp, init_t0, init_per], time, flux, flux_err, sin_model,
+                                           bounds=[(0.25*init_amp,4*init_amp),(init_t0-0.5*(1+pthresh)*init_per,init_t0+0.5*(1+pthresh)*init_per),(init_per*(1-pthresh),init_per*(1+pthresh))])
+    
+    if abs(pfit[0])>amp_thresh*perr[0]:
+        print("Pulsation found with amplitude "+pfit[0]+"±"+perr[0])
+        #Getting model best-fit region.
+        percents = np.percentile(models,[15.87,50,84.13],axis=0)
+        
+        #Returning
+        return percents[1], 0.5*(percents[2]-percents[0])
+    else:
+        return np.zeros(len(time)), np.zeros(len(time))
+
+def model_pulsations_bysector(time,flux,flux_err,fluxmask=None,gapthresh=5,**kwargs):
+    """Running model_pulsations fit"""
+    fluxmask=np.tile(True,len(time)) if fluxmask is None else fluxmask
+    gaps=np.hstack([0,np.diff(time)>gapthresh,len(time)])
+    puls_mods=np.zeros(len(time))
+    for ng in range(len(gaps)-1):
+        gapix=(time>gaps[ng])&(time<gaps[ng+1])&fluxmask
+        puls_mod, err = model_pulsations(time[gapix],flux[gapix],flux_err[gapix],**kwargs)
+        puls_mods[gapix]+=[puls_mod]
+
+    return np.hstack(puls_mods)
