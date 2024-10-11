@@ -3848,8 +3848,8 @@ class chexo_model():
         field_df['dur']=field_df['jd_end']-field_df['jd_start']
         #Cutting all observations long before.after initial data
         #field_df=field_df.loc[(field_df['jd_end']>(np.min(self.lcs[src]['time'])-5))&(field_df['jd_start']<(np.max(self.lcs[src]['time'])+5))]
-        self.logger.debug([field_df.shape,np.sum(np.min(abs(field_df['jd_mid'][None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur']))])
-        field_df=field_df.loc[np.min(abs(field_df['jd_mid'][None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur'])]
+        self.logger.debug([field_df.shape,np.sum(np.min(abs(field_df['jd_mid'].values[None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur']))])
+        field_df=field_df.loc[np.min(abs(field_df['jd_mid'].values[None,:]-self.lcs[src]['time'].values[10::20][:,None]),axis=0)<(0.55*field_df['dur'])]
         
         #getting true timings for jumps in photometric data:
         sort_time=np.sort(self.lcs[src].loc[np.isfinite(self.lcs[src]['time'].values),'time'].values)
