@@ -94,7 +94,7 @@ def get_field_times():
         k2_times['field_string']=k2_times['Campaign']
         k2_times['field']=np.array([float(s[1:].replace('a','.1').replace('b','.2')) for s in k2_times['Campaign']])
         
-        all_fields=all_fields.append(k2_times.loc[:,['field','field_string','mission','jd_start','jd_end']])
+        all_fields=pd.concat([all_fields,k2_times.loc[:,['field','field_string','mission','jd_start','jd_end']]])
 
         
         for yr in np.arange(1,yr_now):
@@ -104,7 +104,7 @@ def get_field_times():
             sect_times['jd_end']=np.array([Time(datetime.strptime(s.split('-')[1], '%m/%d/%y')).jd for s in sect_times['Dates']])
             sect_times['field']=sect_times['Sector']
             sect_times['field_string']=np.array(["S"+str(f) for f in sect_times['Sector']])
-            all_fields=all_fields.append(sect_times.loc[:,['field','field_string','mission','jd_start','jd_end']])
+            all_fields=pd.concat([all_fields,sect_times.loc[:,['field','field_string','mission','jd_start','jd_end']]])
 
         all_fields=all_fields.set_index(np.arange(len(all_fields)))
         all_fields.to_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tables","all_campaign_data_yr"+str(yr_now)+".csv"))
