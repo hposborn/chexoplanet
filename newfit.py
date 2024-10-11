@@ -2555,7 +2555,7 @@ class chexo_model():
             comb_soln = pmx.optimize(start=comb_soln, vars=ivars)
 
             #Doing everything:
-            self.init_soln = pmx.optimize(start=comb_soln)
+            self.init_soln = pm.find_MAP(start=comb_soln)
         
         if len(self.cheops_filekeys)>0 and self.fit_phi_gp:
             #Checking if the GP is useful in the model:
