@@ -4752,7 +4752,7 @@ class chexo_model():
         t=Time(gaiainfo['ref_epoch'], format='jyear')
         #Getting spectral type:
         from astropy.io import ascii
-        tab=ascii.read("EEM_dwarf_UBVIJHK_colors_Teff.txt",header_start=23,data_start=24,data_end=118).to_pandas().loc[:,['SpT','Teff']]
+        tab=ascii.read(os.path.join(tablepath,"EEM_dwarf_UBVIJHK_colors_Teff.txt"),header_start=23,data_start=24,data_end=118).to_pandas().loc[:,['SpT','Teff']]
         SpTy = tab['SpT'].values[np.argmin(abs(teff-tab['Teff']))][:2]
         if hasattr(self,'init_toi_data'):
             starname="TOI"+str(self.init_toi_data['star_TOI']).split('.')[0].replace('TOI','').replace('-','').replace(' ','')
