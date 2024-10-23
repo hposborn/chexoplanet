@@ -2034,7 +2034,7 @@ class chexo_model():
                         self.model_params['rho_p'][pl] = pm.Deterministic("rho_p_gcm3_"+pl,5.513*self.model_params['Mp'][pl]/self.model_params['rpl'][pl]**3)
                     
                     self.model_params['a_Rs'][pl]=pm.Deterministic("a_Rs_"+pl,self.model_params['orbit'][pl].a/self.model_params['Rs'])
-                    self.model_params['sma'][pl]=pm.Deterministic("sma_"+pl,self.model_params['a_Rs'][pl]*0.00465)
+                    self.model_params['sma'][pl]=pm.Deterministic("sma_"+pl,self.model_params['a_Rs'][pl]*self.model_params['Rs']*0.0046525)
                     self.model_params['S_in'][pl]=pm.Deterministic("S_in_"+pl,((695700000*self.model_params['Rs'])**2.*5.67e-8*self.model_params['Teff']**4)/(1.496e11*self.model_params['sma'][pl])**2.)
                     self.model_params['Tsurf_p'][pl]=pm.Deterministic("Tsurf_p_"+pl,(((695700000*self.model_params['Rs'])**2.*self.model_params['Teff']**4.*(1.-0.2))/(4*(1.496e11*self.model_params['sma'][pl])**2.))**(1./4.))
                     
