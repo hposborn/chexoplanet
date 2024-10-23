@@ -447,44 +447,49 @@ class chexo_model():
             if use_past_optimsation:
                 past_params = check_past_PIPE_params(out_dir)
                 print(past_params)
-            
-            if use_past_optimsation and past_params is not None and len(past_params['im'])>0  and past_params['im']['exists'] and exptime<im_thresh:
-                pps.im_optimise = False
-                #Setting key paramaters here:
-                pps.klip = int(past_params['im']['k'])
-                pps.fitrad = int(past_params['im']['r'])
-                pps.bBG = bool(past_params['im']['bg'])
-                pps.darksub = bool(past_params['im']['d'])
-                pps.bStat =  bool(past_params['im']['s'])
-                #for kpar in past_params['im']:
-                #    if kpar!='exists':
-                #        setattr(pps,kpar,past_params['im'][kpar])
-            elif exptime<im_thresh:
-                pps.im_optimise = optimise_klim
-                klip_lookup={'0':[1,3,5,7,9],'7.5':[1,3,5,7],'9':[1,3,5],'11':[1,2,3],'12.5':[1,2],'20':[1]}
-                klipkeys=[0,7.5,9,11,12.5,20]
-                pps.im_test_klips = klip_lookup[str(klipkeys[int(np.searchsorted(klipkeys,mag)-1)])]
-                #pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
-                self.logger.debug("Setting number of klip models to test from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
-            
-            if use_past_optimsation and past_params is not None and len(past_params['sa'])>0 and past_params['sa']['exists'] and exptime>=im_thresh:
+            if exptime>im_thresh:
+                self.logger.debug("Long exposure times of "+str(exptime)+" means we have subarrays and no imagettes")
                 pps.sa_optimise = False
-                #Setting key paramaters here:
-                pps.klip = int(past_params['sa']['k'])
-                pps.fitrad = int(past_params['sa']['r'])
-                pps.bBG = bool(past_params['sa']['bg'])
-                pps.darksub = bool(past_params['sa']['d'])
-                pps.bStat =  bool(past_params['sa']['s'])
-            elif exptime>=im_thresh:
-                pps.sa_optimise = optimise_klim
-                klip_lookup={'0':[1,3,5,7,9],'7.5':[1,3,5,7],'9':[1,3,5],'11':[1,2,3],'12.5':[1,2],'20':[1]}
-                klipkeys=[0,7.5,9,11,12.5,20]
-                # print(klipkeys,mag,type(mag))
-                # print(np.searchsorted(klipkeys,mag)-1,len(klipkeys))
-                # print(klipkeys[np.searchsorted(klipkeys,mag)-1])
-                # print(str(klipkeys[np.searchsorted(klipkeys,mag)-1]),klip_lookup.keys())
-                pps.sa_test_klips = klip_lookup[str(klipkeys[int(np.searchsorted(klipkeys,mag)-1)])]
-                self.logger.debug("Setting number of klip models to test from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
+                if use_past_optimsation and past_params is not None and len(past_params['im'])>0  and past_params['im']['exists']:
+                    pps.im_optimise = False
+                    #Setting key paramaters here:
+                    pps.klip = int(past_params['im']['k'])
+                    pps.fitrad = int(past_params['im']['r'])
+                    pps.bBG = bool(past_params['im']['bg'])
+                    pps.darksub = bool(past_params['im']['d'])
+                    pps.bStat =  bool(past_params['im']['s'])
+                    #for kpar in past_params['im']:
+                    #    if kpar!='exists':
+                    #        setattr(pps,kpar,past_params['im'][kpar])
+                else:
+                    pps.im_optimise = optimise_klim
+                    klip_lookup={'0':[1,3,5,7,9],'7.5':[1,3,5,7],'9':[1,3,5],'11':[1,2,3],'12.5':[1,2],'20':[1]}
+                    klipkeys=[0,7.5,9,11,12.5,20]
+                    pps.im_test_klips = klip_lookup[str(klipkeys[int(np.searchsorted(klipkeys,mag)-1)])]
+                    #pps.im_test_klips = [int(np.clip(2.5**(12-mag)*0.66666,1,7)),int(np.clip(2.5**(12-mag),2,10)),int(np.clip(1.3333*2.5**(12-mag),3,15))]
+                    self.logger.debug("Setting number of klip models to test imagettes from magnitude: "+",".join([str(c) for c in pps.im_test_klips])+". Filekey="+fk)
+            else:
+                self.logger.debug("Short exposure times of "+str(exptime)+" means we have imagettes and can disregard subarrays")
+                pps.im_optimise = False
+                if use_past_optimsation and past_params is not None and len(past_params['sa'])>0 and past_params['sa']['exists']:
+                    pps.sa_optimise = False
+                    #Setting key paramaters here:
+                    pps.klip = int(past_params['sa']['k'])
+                    pps.fitrad = int(past_params['sa']['r'])
+                    pps.bBG = bool(past_params['sa']['bg'])
+                    pps.darksub = bool(past_params['sa']['d'])
+                    pps.bStat =  bool(past_params['sa']['s'])
+                else:
+                    pps.sa_optimise = optimise_klim
+                    klip_lookup={'0':[1,3,5,7,9],'7.5':[1,3,5,7],'9':[1,3,5],'11':[1,2,3],'12.5':[1,2],'20':[1]}
+                    klipkeys=[0,7.5,9,11,12.5,20]
+                    # print(klipkeys,mag,type(mag))
+                    # print(np.searchsorted(klipkeys,mag)-1,len(klipkeys))
+                    # print(klipkeys[np.searchsorted(klipkeys,mag)-1])
+                    # print(str(klipkeys[np.searchsorted(klipkeys,mag)-1]),klip_lookup.keys())
+                    pps.sa_test_klips = klip_lookup[str(klipkeys[int(np.searchsorted(klipkeys,mag)-1)])]
+                    self.logger.debug("Setting number of klip models to test subarrays from magnitude: "+",".join([str(c) for c in pps.sa_test_klips])+". Filekey="+fk)
+                    
 
             pps.nthreads = int(os.environ['OMP_NUM_THREADS']) #Specificially defining the number of threads as the default checks the whole CPU (e.g. 56 on this cluster)
             #pps.smear_fact = 5.5
