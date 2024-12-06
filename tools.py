@@ -17,6 +17,48 @@ id_dic={'TESS':'TIC','tess':'TIC','Kepler':'KIC','kepler':'KIC','KEPLER':'KIC',
         'K2':'EPIC','k2':'EPIC','CoRoT':'CID','corot':'CID'}
 lc_dic={'tess':'ts','kepler':'k1','k2':'k2','corot':'co','cheops':'ch'}
 
+def split_line(line, shift=0,MAX_SIZE_README_LINE=80):
+    """Extracting split_line call from cdsTablesMaker due to nested classes problem"""
+    from textwrap import wrap, fill
+    if shift > MAX_SIZE_README_LINE:
+        shift = 0
+    return ("\n" + " " * shift).join(wrap(line, width=MAX_SIZE_README_LINE - shift))
+def add_authors(author, authors='Authors ?', __authors=None, shift=0,MAX_SIZE_README_LINE=80):
+    """Extracting add_authors call from cdsTablesMaker due to nested classes problem"""
+    import re
+    if __authors:
+        authors = self.__authors
+    elif authors:
+        authors = [ a.strip() for a in authors.split(",") ]
+
+    if author : # first author
+        firstauthor = re.sub(r" *[+]$", "" , author)
+        found = False
+        for a in authors:
+            if a.find(firstauthor) >= 0:
+                found = True
+        if found is False: 
+            # add first author
+            authors[0:0] = [firstauthor]
+
+    curlen = shift
+    curline = []
+    out = []
+
+    for author in authors:
+        curlen += 2 + len(author)
+        if curlen > MAX_SIZE_README_LINE-1:
+            out.append(" "*shift + ", ".join(curline))
+            curlen = shift+2+len(author)
+            curline = []
+
+        curline.append(author)
+    out.append(" "*shift + ", ".join(curline))
+    outlines = ",\n".join(out)
+
+    if shift:
+        return outlines[shift:]
+    return outlines
 
 def vals_to_latex(vals):
     #Function to turn -1,0, and +1 sigma values into round latex strings for a table
@@ -1171,7 +1213,7 @@ def update_lc_locs(epoch,most_recent_sect):
     epoch.to_csv(chexo_tablepath+"/tess_lc_locations.csv")
     return epoch
 
-def observed(tic,radec=None,maxsect=83):
+def observed(tic,radec=None,maxsect=96):
     # Using either "webtess" page or Chris Burke's tesspoint to check if TESS object was observed:
     # Returns dictionary of each sector and whether it was observed or not
     
@@ -1191,7 +1233,7 @@ def observed(tic,radec=None,maxsect=83):
     #Now doing tic + radec search:
     result = tesspoint.tess_stars2px_function_entry(tic, radec.ra.deg, radec.dec.deg)
     sectors = result[3]
-    out_dic={s:True if s in sectors else False for s in np.arange(maxsect)}
+    out_dic={s:True if s in sectors else False for s in np.arange(maxsect+1)}
     #print(out_dic)
     return out_dic
 
@@ -1606,3 +1648,159 @@ def model_pulsations_bysector(time,flux,flux_err,fluxmask=None,gapthresh=5,**kwa
         puls_mods[gapix]+=[puls_mod]
 
     return np.hstack(puls_mods)
+
+def init_gp_on_lc(time, flux, flux_err, mask, tdurs=[0.3], predict_flux=False, pred_time=None, n_burnin=450,n_draws=900, max_len_lc=25000, 
+                  use_binned=False, overwrite=False, n_chains=4, cores=4, periodic_kernel=None, rotation_kernel=None, 
+                  jitterscaling=2, **kwargs):
+    """Function to train GPs on out-of-transit photometry
+
+    Args:
+        n_draws (int, optional): Number of draws from sample. Defaults to 900.
+        max_len_lc (int, optional): Maximum length of lightcurve to use (limiting to a few 1000 helps with compute time). Defaults to 25000.
+        uselc (bool, optional): Specify lightcurve to use. Defaults to None, which takes the `mod.lc` light curve.
+        jitterscaling (float,optional): how high to scaler the log jitter relative to measured (e.g. 1=push for jitter 1 orders higher)
+    """
+    floattype=np.float64
+
+    import pymc as pm
+    import pymc_ext as pmx
+    from celerite2.pymc import terms as pymc_terms
+    import celerite2
+    
+    if pred_time is None:
+        pred_time=time[:]
+    #Also cutting exceptionally steep/sharp bins based on differences
+    diffs=np.diff(np.sort(time))
+    #Cutting any differences where two consecutive steps are not within 5% (i.e. excluding all skipped frames) to retain "good" cadences
+    maxcad=np.max(diffs[1:-1][np.all(np.column_stack((abs(np.log(diffs[:-2]/diffs[1:-1]))<0.05,abs(np.log(diffs[2:]/diffs[1:-1]))<0.05)),axis=1)])
+    #Finding max cadence
+    thresh=1.75
+    for binsize in np.geomspace(3*maxcad,0.5,7)[::-1]:
+        #1 Find steps where the implied gradient is much larger than the typical error for a run of binsizes, starting at the largests
+         
+        bintime,binflux,binflux_err=bin_light_curve(time,flux,flux_err,bin_time=binsize)#avcad*np.sum(ix&flux_mask&transit_mask)/npts_max)
+
+        large_grads=np.where(np.diff(binflux)/np.diff(bintime)>thresh*np.nanmedian(binflux_err)/maxcad)[0]
+        #print("extra points masked due to "+str(thresh)+"-sig bin differences at binsize:",binsize,"=",len(large_grads))
+        if len(large_grads)>0:
+            for nclip in large_grads:
+                mask*=(time<bintime[nclip]-binsize)|(time>bintime[1+nclip]+binsize)
+    
+    if len(time[mask])>max_len_lc:
+        mask[mask]*=np.arange(0,np.sum(mask),1)<max_len_lc
+
+    with pm.Model() as gp_train_model:
+        #####################################################
+        #     Training GP kernel on out-of-transit data
+        #####################################################
+        phot_mean=pm.Normal("phot_mean",mu=np.median(flux[mask]),
+                                sigma=np.std(flux[mask]))
+
+        log_flux_std=np.log(np.nanmedian(abs(np.diff(flux[mask])))).astype(floattype)
+        
+        logs2 = pm.Normal("logs2", mu = jitterscaling+log_flux_std,
+                            sigma = 1, initval=2*jitterscaling+log_flux_std)
+        
+        if periodic_kernel is not None:
+            #Building a periodic kernel with amplitude modified by a third kernel term (i.e. allowing amplitude to vary with time)
+
+            periodic_w0=pm.Normal("periodic_w0",mu=(2*np.pi)/periodic_kernel['period'],sigma=(2*np.pi)/periodic_kernel['period_err'])
+            periodic_power=pm.Normal("periodic_logpower",mu=periodic_kernel['logamp'],sigma=periodic_kernel['logamp_err'])
+            if "periodic_Q" not in periodic_kernel:
+                periodic_logQ=pm.Normal("periodic_kernel",mu=2,sigma=2)
+            ampl_mult_logc=pm.Normal("ampl_mult_logc",mu=3,sigma=2,initval=5)
+            ampl_mult_loga=pm.Normal("ampl_mult_loga",mu=-1,sigma=2,initval=-1)
+            ampl_mult_kernel=pymc_terms.RealTerm(a=pm.math.exp(ampl_mult_loga),c=pm.math.exp(ampl_mult_logc))
+            periodic_kernel = pymc_terms.SHOTerm(S0=pm.math.exp(periodic_power)/(periodic_w0**4), w0=periodic_w0, Q=pm.math.exp(periodic_logQ))
+            
+            phot_w0, phot_sigma = iteratively_determine_GP_params(gp_train_model,time=time[mask],flux=flux[mask], flux_err=flux_err[mask],
+                                                                        tdurs=tdurs)
+            optvars=[logs2, phot_sigma, phot_w0, phot_mean,periodic_w0,periodic_power,ampl_mult_logc,ampl_mult_loga]
+            kernel = pymc_terms.SHOTerm(sigma=phot_sigma, w0=phot_w0, Q=1/np.sqrt(2))
+            gp = celerite2.pymc.GaussianProcess(kernel+ampl_mult_kernel*periodic_kernel,time[mask].astype(floattype),
+                                                        diag=flux_err[mask].astype(floattype)**2 + pm.math.exp(logs2), quiet=True)
+        elif rotation_kernel is not None:
+            #Building a purely rotational kernel
+            rotation_period=pm.Normal("rotation_period",mu=rotation_kernel['period'],sigma=rotation_kernel['period_err'])
+            rotation_logamp=pm.Normal("rotation_logamp",mu=rotation_kernel['logamp'],sigma=rotation_kernel['sigma_logamp'])
+            if 'logQ0' in rotation_kernel and 'sigma_logQ0' in rotation_kernel:
+                rotation_logQ0=pm.Normal("rotation_logQ0",mu=rotation_kernel['logQ0'],sigma=rotation_kernel['sigma_logQ0'])
+            else:
+                rotation_logQ0=pm.Normal("rotation_logQ0",mu=1.0,sigma=5)
+            if 'logdeltaQ0' in rotation_kernel and 'sigma_logdeltaQ0' in rotation_kernel:
+                rotation_logdeltaQ=pm.Normal("rotation_logdeltaQ", mu=rotation_kernel['logdeltaQ0'], sigma=rotation_kernel['sigma_logdeltaQ0'])
+            else:
+                rotation_logdeltaQ=pm.Normal("rotation_logdeltaQ", mu=2.,sigma=10.)
+            rotation_mix=pm.Uniform("rotation_mix",lower=0,upper=1.0)
+            #'sigma', 'Q0', 'dQ', and 'f'
+            optvars=[phot_mean,rotation_logamp,rotation_period,rotation_logQ0,rotation_logdeltaQ,rotation_mix]
+            rotational_kernel = pymc_terms.RotationTerm(sigma=pm.math.exp(rotation_logamp), period=rotation_period, 
+                                                            Q0=pm.math.exp(rotation_logQ0), dQ=pm.math.exp(rotation_logdeltaQ), f=rotation_mix)
+
+            gp = celerite2.pymc.GaussianProcess(rotational_kernel,time[mask].astype(floattype))
+                                #                         diag=flux_err[mask].astype(floattype)**2 + \
+                                #  pm.math.dot(cadence_index[mask,:].astype(floattype),pm.math.exp(logs2)), quiet=True)
+        else:
+            phot_w0, phot_sigma = iteratively_determine_GP_params(gp_train_model,time=time[mask],flux=flux[mask], flux_err=flux_err[mask],
+                                                                    tdurs=tdurs)
+
+            kernel = pymc_terms.SHOTerm(sigma=phot_sigma, w0=phot_w0, Q=1/np.sqrt(2))
+            optvars=[logs2, phot_sigma, phot_w0, phot_mean]
+            gp = celerite2.pymc.GaussianProcess(kernel,time[mask].astype(floattype))
+                                #                         diag=flux_err[mask].astype(floattype)**2 + \
+                                #  pm.math.dot(cadence_index[mask,:].astype(floattype),pm.math.exp(logs2)), quiet=True)
+        #logs2 = pm.Normal("logs2", mu=np.log(np.var(y[m])), sigma=10)
+        #max_cad = np.nanmax([np.nanmedian(np.diff(time[mask&(cadence_index[mask,n])])) for n in range(len(cads_short))])
+        
+        #gp.log_likelihood(flux[mask].astype(floattype) - phot_mean)
+        gp.compute(time[mask].astype(floattype), 
+                                    yerr=np.sqrt(flux_err[mask].astype(floattype) ** 2 + pm.math.exp(logs2))**2)
+
+        loglik=gp.marginal("loglik",observed=flux[mask].astype(floattype))
+        if predict_flux:
+            gp_pred=pm.Deterministic("gp_pred",gp.predict(y=flux[mask].astype(floattype),t=pred_time))
+
+        gp_init_soln = pmx.optimize(start=None, vars=optvars)
+        gp_init_trace = pm.sample(tune=n_burnin, draws=n_draws, start=gp_init_soln, chains=n_chains,cores=cores)# **kwargs)
+    return gp_init_trace
+
+def gp_flatten(time, flux, flux_err, flux_mask = None, tdurs=[0.3], transit_mask = None, npts_max=6000,**kwargs):
+    """Computes a best-fit GP using masked/binned out-of-transit data and then applies it to all datapoints.
+    GPs don't scale well to many datapoints, so we will dynamically splice/bin to ensure fewer than ~5000 datapoints total
+    
+    Args:
+        time
+        flux
+        flux_err
+        flux_mask
+        transit_mask
+    """
+    import arviz as az
+    
+    transit_mask=np.tile(True,len(time)) if transit_mask is None else transit_mask
+    flux_mask=np.tile(True,len(time)) if flux_mask is None else flux_mask
+
+    #Step 1) if there is a large gap (>50% of total lightcurve cadence), we split
+    bk_space=0.5*np.sum(np.diff(np.sort(time))[np.diff(np.sort(time))<0.1])#Summing cadences with large jumps removed.
+    region_starts=np.sort(time)[1+np.hstack((-1,np.where(np.diff(np.sort(time))>bk_space)[0]))]
+    region_ends  =np.sort(time)[np.hstack((np.where(np.diff(np.sort(time))>bk_space)[0],len(time)-1))]
+    print(len(region_starts),"regions:",[str(region_starts[n])[:6]+" - "+str(region_ends[n])[:6] for n in range(len(region_starts))])
+
+    gpfits = np.zeros(len(time))
+    for n in range(len(region_starts)):
+        ix=(time>=region_starts[n])*(time<=region_ends[n])
+        assert len(time[ix])>500
+        
+        #Step 2) if longer than npts_max, bin by the factor required to get to npts_max
+        if np.sum(ix&flux_mask&transit_mask)>npts_max:
+            avcad=np.nanmedian(np.diff(time[ix&flux_mask&transit_mask]))
+            ibinlc=bin_lc_segment(np.column_stack((time[ix&flux_mask&transit_mask],flux[ix&flux_mask&transit_mask],flux_err[ix&flux_mask&transit_mask])),binsize=avcad*np.sum(ix&flux_mask&transit_mask)/npts_max)
+            modtime=ibinlc[:,0];modflux=ibinlc[:,1];modflux_err=ibinlc[:,2];modmask=np.isfinite(ibinlc[:,1])
+            pred_time=time[ix]
+        else:
+            modtime=time[ix];modflux=flux[i];modflux_err=flux_err[ix];modmask=flux_mask[ix]&transit_mask[ix];pred_time=time[ix]
+
+        gp_trace = init_gp_on_lc(modtime, modflux, modflux_err, mask=modmask, tdurs=tdurs, predict_flux=True, pred_time=pred_time, n_burnin=600, n_draws=300,**kwargs)
+        gpfits[ix] = np.nanmedian(az.extract(gp_trace,var_names=['gp_pred']), axis=1)
+
+    return np.hstack(gpfits)
