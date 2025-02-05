@@ -1801,7 +1801,8 @@ class chexo_model():
                 self.planets[pl]['init_transit_times']=self.planets[pl]['tcens']
                 self.planets[pl]['init_transit_inds']=np.round((self.planets[pl]['tcens']-self.planets[pl]['tcen'])/self.planets[pl]['period']).astype(int)
                 self.planets[pl]['n_trans']=len(self.planets[pl]['tcens'])
-            self.planets[pl]['init_transit_inds']-=np.min(self.planets[pl]['init_transit_inds'])
+            if len(self.planets[pl]['init_transit_inds'])>0:
+                self.planets[pl]['init_transit_inds']-=np.min(self.planets[pl]['init_transit_inds'])
             
 
     def init_model(self, **kwargs):
