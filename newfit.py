@@ -1473,7 +1473,7 @@ class chexo_model():
             else:
                 cheops_allplmodel = pm.Deterministic("cheops_allplmodel_"+fk, cheops_flux_cor)
             cheops_llk = pm.Normal("cheops_llk", mu=cheops_allplmodel, sigma=pm.math.sqrt(yerr ** 2 + pm.math.exp(cheops_logs)**2), observed=y)
-            pm.Deterministic("out_cheops_llk",cheops_llk)
+            #pm.Deterministic("out_cheops_llk",cheops_llk)
             
             #print(self.ichlc_models[fk].check_test_point())
             #Minimizing:
@@ -1489,7 +1489,7 @@ class chexo_model():
                                             [quad_decorr_dict[par] for par in quad_decorr_dict])
             comb_soln = pmx.optimize(start=comb_soln)
             #self.logger.debug(mod.)
-            self.cheops_init_trace[savefname[1:]]= pm.sample(tune=300, draws=400, cores=self.n_cores, start=comb_soln, return_inferencedata=True, mp_ctx=mp_ctx)
+            self.cheops_init_trace[savefname[1:]]= pm.sample(tune=300, draws=400, cores=self.n_cores, start=comb_soln, return_inferencedata=True, mp_ctx=mp_ctx, idata_kwargs={"log_likelihood": True})
 
             cloudpickle.dump(self.cheops_init_trace[savefname[1:]],open(os.path.join(self.save_file_loc,self.name.replace(" ","_"),self.unq_name+savefname+".pkl"),"wb"))
         return savefname[1:]
@@ -1744,14 +1744,14 @@ class chexo_model():
                 trace_no_trans_name = self.cheops_only_model(fk, transittype="none", force_no_dydt=False, **kwargs)#,linpars=notrans_linpars,quadpars=notrans_quadpars)
                 #trace_no_trans['log_likelihood']=trace_no_trans.out_llk_cheops
                 self.model_comp[fk]['notr_waic'] = az.waic(self.cheops_init_trace[trace_no_trans_name])
-                self.model_comp[fk]['tr_loglik'] = np.max(self.cheops_init_trace[trace_w_trans_name].posterior['out_cheops_llk'])
-                self.model_comp[fk]['notr_loglik'] = np.max(self.cheops_init_trace[trace_no_trans_name].posterior['out_cheops_llk'])
-                self.model_comp[fk]['delta_loglik'] = (self.model_comp[fk]['tr_loglik'] - self.model_comp[fk]['notr_loglik'])
+                # self.model_comp[fk]['tr_loglik'] = np.max(self.cheops_init_trace[trace_w_trans_name].posterior['cheops_llk'])
+                # self.model_comp[fk]['notr_loglik'] = np.max(self.cheops_init_trace[trace_no_trans_name].posterior['cheops_llk'])
+                # self.model_comp[fk]['delta_loglik'] = (self.model_comp[fk]['tr_loglik'] - self.model_comp[fk]['notr_loglik'])
                 
-                self.model_comp[fk]['notr_BIC'] = self.model_comp[fk]['notr_waic']['p_waic'] * np.log(np.sum((self.lcs["cheops"]['filekey']==fk)&self.lcs["cheops"]['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_no_trans_name].out_cheops_llk))
-                self.model_comp[fk]['tr_BIC'] = self.model_comp[fk]['tr_waic']['p_waic'] * np.log(np.sum((self.lcs["cheops"]['filekey']==fk)&self.lcs["cheops"]['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_w_trans_name].out_cheops_llk))
-                self.model_comp[fk]['deltaBIC'] = self.model_comp[fk]['notr_BIC'] - self.model_comp[fk]['tr_BIC']
-                self.model_comp[fk]['BIC_pref_model']="transit" if self.model_comp[fk]['deltaBIC']<0 else "no_transit"
+                # self.model_comp[fk]['notr_BIC'] = self.model_comp[fk]['notr_waic']['p_waic'] * np.log(np.sum((self.lcs["cheops"]['filekey']==fk)&self.lcs["cheops"]['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_no_trans_name].posterior['cheops_llk']))
+                # self.model_comp[fk]['tr_BIC'] = self.model_comp[fk]['tr_waic']['p_waic'] * np.log(np.sum((self.lcs["cheops"]['filekey']==fk)&self.lcs["cheops"]['mask'])) - 2*np.log(np.max(self.cheops_init_trace[trace_w_trans_name].posterior['cheops_llk']))
+                # self.model_comp[fk]['deltaBIC'] = self.model_comp[fk]['notr_BIC'] - self.model_comp[fk]['tr_BIC']
+                # self.model_comp[fk]['BIC_pref_model']="transit" if self.model_comp[fk]['deltaBIC']<0 else "no_transit"
                 self.logger.debug(self.model_comp[fk]['notr_waic'].index)
                 #self.logger.debug(self.model_comp[fk]['notr_waic'].keys())
                 #self.logger.debug(self.model_comp[fk]['notr_waic']['elpd_waic'])
@@ -1767,7 +1767,7 @@ class chexo_model():
                 confidence = np.array(["strongly prefers no transit","weakly prefers no transit","weakly prefers transit","strongly prefers transit"])[np.searchsorted([-1*waic_errs,0,waic_errs],self.model_comp[fk]['deltaWAIC'])]
                 self.model_comp[fk]['WAIC_pref_model']="transit" if self.model_comp[fk]['deltaWAIC']>0 else "no_transit"
                 #confidence="No detection" if self.model_comp[fk]['deltaWAIC']<2 else "Moderate detection" if (self.model_comp[fk]['deltaWAIC']>=2)&(self.model_comp[fk]['deltaWAIC']<8) else "Strong detection"
-                self.cheops_assess_statements[fk]=["For fk="+fk+" WAIC "+confidence+"; Delta WAIC ="+str(np.round(self.model_comp[fk]['deltaWAIC'],2)),"(BIC prefers"+self.model_comp[fk]['BIC_pref_model']+" with deltaBIC ="+str(np.round(self.model_comp[fk]['deltaBIC'],2))+"). "]
+                self.cheops_assess_statements[fk]=["For fk="+fk+" WAIC "+confidence+"; Delta WAIC ="+str(np.round(self.model_comp[fk]['deltaWAIC'],2))]#,"(BIC prefers"+self.model_comp[fk]['BIC_pref_model']+" with deltaBIC ="+str(np.round(self.model_comp[fk]['deltaBIC'],2))+"). "]
                 self.logger.info(self.cheops_assess_statements[fk])
                 #self.logger.info("BIC prefers",self.model_comp[fk]['BIC_pref_model'],"( Delta BIC =",np.round(self.model_comp[fk]['deltaBIC'],2),"). WAIC prefers",self.model_comp[fk]['WAIC_pref_model']," ( Delta WAIC =",np.round(self.model_comp[fk]['deltaWAIC'],2),")")
                 
@@ -1889,6 +1889,10 @@ class chexo_model():
                         self.model_params[scope+'_mult']=1.0
 
                 self.model_params['u_stars']={}
+                self.model_params['avdepths']={scope:{} for scope in self.ld_dists}
+                self.model_params['maxdepths']={scope:{} for scope in self.ld_dists}
+                overcor_fact={scope:{} for scope in self.ld_dists}
+                
                 for scope in self.ld_dists:
                     if self.constrain_lds:
                         self.model_params['u_stars'][scope] = pm.TruncatedNormal("u_star_"+scope, lower=0.0, upper=1.0,
@@ -1897,6 +1901,7 @@ class chexo_model():
                                                                         shape=2, initval=np.clip(np.nanmedian(self.ld_dists[scope],axis=0),0,1))
                     else:
                         self.model_params['u_stars'][scope] = xo.distributions.QuadLimbDark("u_star_"+scope, initval=np.array([0.3, 0.2]))
+                    
                 # -------------------------------------------
                 # Initialising parameter dicts for each planet
                 # -------------------------------------------
@@ -2022,7 +2027,15 @@ class chexo_model():
                     self.model_params['ror'][pl] = pm.Deterministic("ror_"+pl,pm.math.exp(self.model_params['logror'][pl]))
                     self.model_params['rpl'][pl] = pm.Deterministic("rpl_"+pl,109.1*self.model_params['ror'][pl]*self.model_params['Rs'])
                     self.model_params['b'][pl] = xo.distributions.ImpactParameter("b_"+pl, ror=self.model_params['ror'][pl], initval=self.planets[pl]['b'])
-                    
+                    for scope in self.ld_dists:
+                        #From Heller et al 2019 - a mix of equations 3/4 - effectively I_p/I_a
+                        # I_diskav = 1 - ustar[0]/3 - ustar[1]/6;  mu = pm.math.sqrt(1-b**2);   I_b = 1 - ustar[0]*(1 - mu) - ustar[1]*(1 - mu)**2;  depth = ror**2*I_b/I_diskav
+                        self.model_params['maxdepths'][scope][pl] = pm.Deterministic('maxdepth_'+pl+'_'+scope, self.model_params['ror'][pl]**2*(1 - self.model_params['u_stars'][scope][0] * \
+                                                                                                                                                (1 - pm.math.sqrt(1-self.model_params['b'][pl]**2)) - self.model_params['u_stars'][scope][1]*(1 - pm.math.sqrt(1-self.model_params['b'][pl]**2))**2)/ \ 
+                                                                                                                                                (1 - self.model_params['u_stars'][scope][0]/3 - self.model_params['u_stars'][scope][1]/6))
+                        #From Heller et al 2019 - equation 6 rearranged for depth (1-f) using overcor_fact = I_p/I_a, so dep = (rp/rs)^2*I_x*overcor_fact
+                        #self.model_params['avdepths'][scope][pl] =pm.Deterministic('avdepth_'+pl+'_'+scope, self.model_params['ror'][pl]**2 * (1 - self.model_params['u_stars'][scope][0]*(1-0.25*np.pi*np.sqrt(1-self.model_params['b'][pl]**2)) - self.model_params['u_stars'][scope][1]*(5/3 - 0.5*np.pi/np.sqrt(1-self.model_params['b'][pl]**2) - self.model_params['b'][pl]**2 * (2/3 - 0.5*np.pi/(np.sqrt(1-self.model_params['b'][pl]**2))))**2)*overcor_fact[scope][pl])
+
                     if (self.fit_ttvs or self.split_periods is not None) and self.planets[pl]['n_trans']>2 and pl in self.split_periods and len(self.split_periods[pl])>1 and self.split_periods[pl]!=range(self.planets[pl]['n_trans']):
                         if self.assume_circ:
                             self.model_params['orbit'][pl] = xo.orbits.TTVOrbit(b=[self.model_params['b'][pl]], 
@@ -2856,7 +2869,7 @@ class chexo_model():
             
             self.ttv_trace = pm.sample(tune=n_tune_steps, draws=n_draws, 
                                     chains=self.n_cores, cores=self.n_cores, 
-                                    start=self.ttv_init_soln, target_accept=0.8, return_inferencedata=True)#**kwargs)
+                                    start=self.ttv_init_soln, target_accept=0.8, return_inferencedata=True,idata_kwargs={"log_likelihood": True})#**kwargs)
             self.save_trace_summary(trace=self.ttv_trace,suffix="_ttvfit",returndf=False,summary_table_name='ttv_trace_summary')
         if not hasattr(self,'model_comp'):
             self.model_comp={'ttv':{}}
@@ -3144,11 +3157,24 @@ class chexo_model():
                 self.models_out[tracename]["cheops_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
 
                 for npl,pl in enumerate(self.planets):
-                    if "cheops_planets_x_"+pl+"_"+fk in init_trace.varnames:
+                    if "cheops_planets_x_"+pl+"_"+fk in init_trace:
                         self.models_out[tracename]['cheops_'+pl+"model_"+p]=np.hstack([np.nanpercentile(init_trace["cheops_planets_x_"+pl+"_"+fk],self.percentiles[p],axis=0) for fk in fks])
                     else:
                         self.models_out[tracename]['cheops_'+pl+"model_"+p]=np.zeros(len(self.models_out[tracename]['time']))
                     self.models_out[tracename]["cheops_allplmodel_"+p]+=self.models_out[tracename]['cheops_'+pl+"model_"+p]
+            elif type(init_trace)==az.data.inference_data.InferenceData:
+                for p in self.percentiles:
+                    self.models_out[tracename]['cheops_lindetrend_'+p]=np.hstack([np.nanpercentile(init_trace.posterior['cheops_flux_cor_'+fk].values,self.percentiles[p],axis=(0,1)) for fk in fks])
+                    self.models_out[tracename]['cheops_alldetrend_'+p]=self.models_out[tracename]['cheops_lindetrend_'+p].values[:]
+                    if len(self.planets)>0:
+                        self.models_out[tracename]["cheops_allplmodel_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                    for npl,pl in enumerate(self.planets):
+                        if "cheops_planets_x_"+pl+"_"+fk in init_trace.posterior:
+                            self.models_out[tracename]['cheops_'+pl+"model_"+p]=np.hstack([np.nanpercentile(init_trace.posterior["cheops_planets_x_"+pl+"_"+fk].values,self.percentiles[p],axis=(0,1)) for fk in fks])
+                        else:
+                            self.models_out[tracename]['cheops_'+pl+"model_"+p]=np.zeros(len(self.models_out[tracename]['time']))
+                        self.models_out[tracename]["cheops_allplmodel_"+p]+=self.models_out[tracename]['cheops_'+pl+"model_"+p]
+
             #self.models_out[tracename+'_gap_models_out']=self.models_out[tracename] #Setting these to be identical
    #cheops_planets_x
 
