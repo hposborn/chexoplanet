@@ -178,7 +178,98 @@ def bin_lc_segment(lc_segment, binsize, return_digi=False,**kwargs):
         return binlc_given_x(lc_segment,binnedx,return_digi,**kwargs)
     else:
         return lc_segment
+
+def bin_light_curve(time, flux, flux_err= None,
+    bin_time= 1 / 24, return_std=True, return_bin_indices= False,new_time_bins = None,
+):
+    """Bins a light curve into time intervals and calculates the weighted mean
+    and optionally the standard deviation of the flux in each bin.
+
+    Parameters
+    ----------
+    time : np.ndarray
+        The 1D array containing the time points of the light curve.
+    flux : np.ndarray
+        The 1D array containing the flux values of the light curve at the
+        corresponding time points.
+    flux_err : Optional[np.ndarray], optional
+        The 1D array containing the error (uncertainty) on the flux values.
+        If not provided, a weight of 1 is used for each data point.
+    bin_time : float, optional
+        The width of the bins in units of time. Defaults to 1/24 (days).
+    return_std : bool, optional
+        If True (default), calculate and return the weighted standard deviation
+        of the flux in each bin. If False, only the bin centers and weighted
+        mean flux are returned.
+    return_bin_indices : bool, optional
+        If True (default), return the indexes for each bin derived by `np.digitize`.
+    new_time_bins : Optional[np.ndarray], optional
+        An array of potential new times to bin into.
+
+    Returns
+    -------
+    Union[Tuple[np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]
+        A tuple containing the bin centers and the weighted mean flux in each bin.
+        If `return_std` is True, the tuple also includes the weighted standard
+        deviation of the flux in each bin.
+
+    Notes
+    -----
+    This function removes any NaN values from the input arrays before binning.
+    For bins with only one data point, the standard deviation is set to zero.
+
+    See Also
+    --------
+    bin_light_curve_slow
+    """
+    if np.any(np.isnan(time)):
+        mask = ~np.isnan(time)
+        time = time[mask]
+        flux = flux[mask]
+        if flux_err is not None:
+            flux_err = flux_err[mask]
+
+    if new_time_bins is None:
+        # Create bins based on the specified bin_time
+        bins = np.arange(np.nanmin(time), np.nanmax(time) + 2 * bin_time, bin_time)
+    else:
+        avbinsize=np.nanmedian(np.diff(new_time_bins))
+        #Making bin divisions half way between each defined x point here
+        bins=np.hstack((new_time_bins[0]-0.5*avbinsize,0.5*(new_time_bins[:-1]+new_time_bins[1:]),new_time_bins[-1]+0.5*avbinsize))
+
+    # Digitize the time array into the created bins
+    bin_indices = np.digitize(time, bins) - 1
     
+    # Find non-empty bins
+    points_per_bin = np.bincount(bin_indices)
+    non_empty_bins = np.where(points_per_bin > 0)
+    bin_centers = bins[non_empty_bins] + bin_time / 2
+
+    weights = 1.0 if flux_err is None else 1 / flux_err**2
+    weighted_sum = np.bincount(bin_indices, weights=flux * weights)[non_empty_bins]
+    sum_of_weights = np.bincount(bin_indices, weights=None if flux_err is None else weights)[
+        non_empty_bins
+    ]
+    weighted_mean = weighted_sum / sum_of_weights
+
+    if return_std:
+        mean_repeated = np.repeat(weighted_mean, points_per_bin[non_empty_bins])
+        variance = (
+            np.bincount(bin_indices, weights=(flux - mean_repeated) ** 2 * weights)[non_empty_bins]
+            / sum_of_weights
+        )
+        weighted_std = np.where(points_per_bin[non_empty_bins] == 1, 0, np.sqrt(variance))
+        if return_bin_indices:
+            return bin_centers, weighted_mean, weighted_std/np.sqrt(points_per_bin[non_empty_bins]), bin_indices
+        else:
+            return bin_centers, weighted_mean, weighted_std/np.sqrt(points_per_bin[non_empty_bins])
+    else:
+        if return_bin_indices:
+            return bin_centers, weighted_mean, bin_indices
+        else:
+            return bin_centers, weighted_mean
+
+
 def binlc_given_x(lc_segment, binnedx, return_digi=False,average_time=True,**kwargs):
     digi=np.digitize(lc_segment[:,0],binnedx)
     if average_time:
@@ -1649,6 +1740,59 @@ def model_pulsations_bysector(time,flux,flux_err,fluxmask=None,gapthresh=5,**kwa
 
     return np.hstack(puls_mods)
 
+def iteratively_determine_GP_params(pmmodel,time,flux,flux_err,tdurs,mult_long_timespan=4,mult_short_timespan=1.5,debug=False):
+    """Iteratively determining best start parameter arrays for SHO GP kernel w0 and power."""
+    lcrange=27
+    av_dur = np.average(tdurs)
+    exps=np.array([np.log((2*np.pi)/(av_dur)), np.log((2*np.pi)/(0.1*lcrange))])
+    #Max power as half the 1->99th percentile in flux
+    maxpowers=0.5*np.ptp(np.nanpercentile(flux,[2,98]))
+    logmaxpowers=np.log(0.5*np.ptp(np.nanpercentile(flux,[1,99])))
+    #([np.nanstd(self.lc_fit[scope].loc[~self.lc_fit[scope]['in_trans_all'],'flux'].values) for scope in self.lcs]))
+    
+    #Min power as 2x the average point-to-point displacement
+    logminpowers=np.log(2*np.nanmedian(abs(np.diff(flux))))
+    minpowers=0.5*np.nanmedian(abs(np.diff(flux)))
+    span=abs(np.min(logmaxpowers)-np.max(logminpowers))
+
+    import pymc as pm
+    import pymc_ext as pmx
+    target=0.01
+    success=np.array([False,False]);target=0.01
+    try:
+        while np.any(~success) and target<0.2:
+            if not success[0]:
+                try:
+                    low=(2*np.pi)/(abs(np.random.normal(mult_long_timespan*(0.03/target)**0.25,1)))#Targetting ~18 days at max (start 21d, end 12d)
+                    up=np.clip((2*np.pi)/(mult_short_timespan*av_dur*(0.1/target)),2*low,10000) #And ~2.5x average transit duration at min (start 8x, end 0.5x)
+                    #itarg=abs(np.random.normal(target,0.5*target))
+                    print(low,up,(2*np.pi)/(2*av_dur),(2*np.pi)/(av_dur*(0.1/target)),2*low)
+                    w0vals = pmx.utils.estimate_inverse_gamma_parameters(lower=low, upper=up, target=target)
+                    success[0]=True
+                except:
+                    success[0]=False
+                    
+            if not success[1]:
+                try:
+                    sigmavals = pmx.utils.estimate_inverse_gamma_parameters(lower=abs(np.random.normal(np.min(minpowers),0.4*np.min(minpowers))), upper=np.min(maxpowers)*np.sqrt(target/0.1),
+                                                                            target=target)
+                    success[1]=True
+                except:
+                    success[1]=False
+            target*=1.15
+        assert np.all(success), "InverseGamma estimation of "+"&".join(list(np.array(["w0","sigma"])[~success]))+" failed"
+        with pmmodel:
+            w0=pm.InverseGamma("w0",**w0vals)
+            sigma=pm.InverseGamma("sigma",**sigmavals)
+        return w0, sigma
+    except:
+        with pmmodel:
+            log_w0 = pm.TruncatedNormal("log_w0", mu=exps[1]+0.2*np.ptp(exps), sigma=0.01*np.ptp(exps), initval=exps[1]+0.15*np.ptp(exps),lower=exps[1],upper=exps[0])
+            w0 = pm.Deterministic("w0", pm.math.exp(log_w0))
+            log_sigma = pm.Normal("log_sigma", mu=(np.min(logmaxpowers)+np.max(logminpowers))/2, sigma=0.2*abs(np.min(logmaxpowers)-np.max(logminpowers)),initval=np.min(logmaxpowers)-0.1)
+            sigma = pm.Deterministic("sigma", pm.math.exp(log_sigma))
+        return w0, sigma
+
 def init_gp_on_lc(time, flux, flux_err, mask, tdurs=[0.3], predict_flux=False, pred_time=None, n_burnin=450,n_draws=900, max_len_lc=25000, 
                   use_binned=False, overwrite=False, n_chains=4, cores=4, periodic_kernel=None, rotation_kernel=None, 
                   jitterscaling=2, **kwargs):
@@ -1798,7 +1942,7 @@ def gp_flatten(time, flux, flux_err, flux_mask = None, tdurs=[0.3], transit_mask
             modtime=ibinlc[:,0];modflux=ibinlc[:,1];modflux_err=ibinlc[:,2];modmask=np.isfinite(ibinlc[:,1])
             pred_time=time[ix]
         else:
-            modtime=time[ix];modflux=flux[i];modflux_err=flux_err[ix];modmask=flux_mask[ix]&transit_mask[ix];pred_time=time[ix]
+            modtime=time[ix];modflux=flux[ix];modflux_err=flux_err[ix];modmask=flux_mask[ix]&transit_mask[ix];pred_time=time[ix]
 
         gp_trace = init_gp_on_lc(modtime, modflux, modflux_err, mask=modmask, tdurs=tdurs, predict_flux=True, pred_time=pred_time, n_burnin=600, n_draws=300,**kwargs)
         gpfits[ix] = np.nanmedian(az.extract(gp_trace,var_names=['gp_pred']), axis=1)
